@@ -1,0 +1,12 @@
+{
+  "name": "Global Video & Audio Call",
+  "description": "Global video and audio calling platform where users can sign in and connect together seamlessly.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

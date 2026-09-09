@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in the global call platform",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth user ID" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "email": { "type": "string", "description": "Email address" },
+        "photoURL": { "type": "string", "description": "Avatar URL" },
+        "role": { "type": "string", "description": "User role: admin or user", "enum": ["admin", "user"] },
+        "status": { "type": "string", "description": "Presence status: online, in-call, offline" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Call room / channel for global audio and video calling",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Room identifier" },
+        "title": { "type": "string", "description": "Room title/topic" },
+        "description": { "type": "string", "description": "Room description" },
+        "createdBy": { "type": "string", "description": "User ID who created the room" },
+        "callType": { "type": "string", "description": "video_audio or audio_only" },
+        "isGlobal": { "type": "boolean", "description": "Whether this is the default public global room" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "createdBy"]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "A participant currently active in a call room",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "photoURL": { "type": "string", "description": "Avatar URL" },
+        "isAudioMuted": { "type": "boolean", "description": "Microphone mute state" },
+        "isVideoOff": { "type": "boolean", "description": "Camera video mute state" },
+        "isScreenSharing": { "type": "boolean", "description": "Whether user is sharing screen" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "lastPing": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName"]
+    },
+    "Signal": {
+      "title": "Signal",
+      "description": "WebRTC signaling payload (offer, answer, ice candidate) between peers",
+      "type": "object",
+      "properties": {
+        "from": { "type": "string", "description": "Sender User ID" },
+        "to": { "type": "string", "description": "Receiver User ID" },
+        "type": { "type": "string", "description": "Signal type: offer, answer, ice" },
+        "payload": { "type": "string", "description": "JSON serialized SDP or ICE candidate" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["from", "to", "type", "payload"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Chat message or reaction sent in a call room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Message ID" },
+        "senderId": { "type": "string", "description": "User ID of sender" },
+        "senderName": { "type": "string", "description": "Sender name" },
+        "senderPhoto": { "type": "string", "description": "Sender photo URL" },
+        "text": { "type": "string", "description": "Message text or reaction emoji" },
+        "type": { "type": "string", "description": "text or reaction" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "senderId", "senderName", "text"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "Registered user profiles"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "Room" },
+      "description": "Global and custom call rooms"
+    },
+    "/rooms/{roomId}/participants/{participantId}": {
+      "schema": { "$ref": "Participant" },
+      "description": "Active participants in the call room"
+    },
+    "/rooms/{roomId}/signals/{signalId}": {
+      "schema": { "$ref": "Signal" },
+      "description": "WebRTC signaling messages between participants in the call"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "ChatMessage" },
+      "description": "In-call chat messages and reactions"
+    }
+  }
+}
