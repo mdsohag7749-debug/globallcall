@@ -37,7 +37,7 @@ export default function App() {
             setCurrentUser(synced);
           }
         } catch (e) {
-          console.warn('Sync profile error:', e);
+          console.error('Firebase user profile sync failed:', e);
           setCurrentUser({
             uid: user.uid,
             displayName: user.displayName || 'Caller',

@@ -22,15 +22,27 @@ import {
 import firebaseConfigData from '../../firebase-applet-config.json';
 import { UserProfile } from '../types';
 
-const firebaseConfig = {
-  apiKey: firebaseConfigData.apiKey,
-  authDomain: firebaseConfigData.authDomain,
-  projectId: firebaseConfigData.projectId,
-  storageBucket: firebaseConfigData.storageBucket,
-  messagingSenderId: firebaseConfigData.messagingSenderId,
-  appId: firebaseConfigData.appId,
-  measurementId: firebaseConfigData.measurementId,
+const envConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfigData.apiKey,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfigData.authDomain,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfigData.projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfigData.storageBucket,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfigData.messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfigData.appId,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || firebaseConfigData.measurementId,
 };
+
+const firebaseConfig = {
+  apiKey: envConfig.apiKey,
+  authDomain: envConfig.authDomain,
+  projectId: envConfig.projectId,
+  storageBucket: envConfig.storageBucket,
+  messagingSenderId: envConfig.messagingSenderId,
+  appId: envConfig.appId,
+  measurementId: envConfig.measurementId,
+};
+
+const firestoreDatabaseId = (import.meta.env.VITE_FIRESTORE_DATABASE_ID || firebaseConfigData.firestoreDatabaseId || '').trim();
 
 // Initialize App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -38,19 +50,26 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Auth
 export const auth = getAuth(app);
 
-// Initialize Firestore with specified custom database ID if available
-export const db = firebaseConfigData.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfigData.firestoreDatabaseId)
+// Initialize Firestore with specified custom database ID if available.
+export const db = firestoreDatabaseId
+  ? getFirestore(app, firestoreDatabaseId)
   : getFirestore(app);
 
 // Skill requirement: Validate connection to Firestore at boot
 export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    console.info(`Firebase connected to project "${firebaseConfig.projectId}"${firestoreDatabaseId ? ` / database "${firestoreDatabaseId}"` : ''}.`);
+    return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firebase client appears offline. Retrying or waiting for network.');
-    }
+    const firebaseError = error as { code?: string; message?: string };
+    console.error('Firebase Firestore connection failed.', {
+      code: firebaseError.code,
+      message: firebaseError.message,
+      projectId: firebaseConfig.projectId,
+      databaseId: firestoreDatabaseId || '(default)',
+    });
+    return false;
   }
 }
 testConnection();
