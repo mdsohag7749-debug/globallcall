@@ -53,6 +53,8 @@ export function useCallRoom({
   const processedSignals = useRef<Set<string>>(new Set());
   const facingModeRef = useRef<'user' | 'environment'>('user');
   facingModeRef.current = facingMode;
+  // Auto-delete timer: if room stays empty for 2 min, delete the Firestore room doc
+  const emptyRoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Detect if device has multiple cameras or is mobile touch device
   useEffect(() => {
@@ -367,6 +369,44 @@ export function useCallRoom({
         });
         setParticipants(list);
 
+        // ── Auto-delete room when empty ──────────────────────────────────
+        // Only auto-delete rooms that were created by users (not system defaults)
+        const SYSTEM_ROOM_IDS = [
+          'global-lounge-main',
+          'global-audio-cafe',
+          'global-hangout-chill',
+          'webrtc-dev-04'
+        ];
+        const isSystemRoom = SYSTEM_ROOM_IDS.includes(roomId);
+
+        if (!isSystemRoom) {
+          if (list.length === 0) {
+            // Room is empty — start 2-minute auto-delete countdown
+            if (!emptyRoomTimerRef.current) {
+              emptyRoomTimerRef.current = setTimeout(async () => {
+                try {
+                  // Double-check the room is still empty before deleting
+                  const snap = await getDocs(collection(db, 'rooms', roomId, 'participants'));
+                  if (snap.empty) {
+                    await deleteDoc(doc(db, 'rooms', roomId));
+                    console.info(`Room "${roomId}" auto-deleted after being empty for 2 minutes.`);
+                  }
+                } catch (e) {
+                  console.warn('Auto-delete room failed:', e);
+                }
+                emptyRoomTimerRef.current = null;
+              }, 2 * 60 * 1000); // 2 minutes
+            }
+          } else {
+            // Someone is in the room — cancel the timer
+            if (emptyRoomTimerRef.current) {
+              clearTimeout(emptyRoomTimerRef.current);
+              emptyRoomTimerRef.current = null;
+            }
+          }
+        }
+        // ────────────────────────────────────────────────────────────────
+
         // Clean up peer connections for departed participants
         const currentUids = new Set(list.map(p => p.uid));
         Object.keys(peerConnections.current).forEach(uid => {
@@ -399,7 +439,14 @@ export function useCallRoom({
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      // Clear timer on unmount to prevent ghost deletions
+      if (emptyRoomTimerRef.current) {
+        clearTimeout(emptyRoomTimerRef.current);
+        emptyRoomTimerRef.current = null;
+      }
+    };
   }, [roomId, currentUser.uid, sendOfferToPeer]);
 
   // 4. Listen to WebRTC signals directed to current user
