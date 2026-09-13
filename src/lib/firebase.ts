@@ -13,6 +13,7 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
+  initializeFirestore,
   doc, 
   setDoc, 
   getDoc,
@@ -50,10 +51,10 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Auth
 export const auth = getAuth(app);
 
-// Initialize Firestore with specified custom database ID if available.
+// Initialize Firestore with specified custom database ID if available and ignoreUndefinedProperties
 export const db = firestoreDatabaseId
-  ? getFirestore(app, firestoreDatabaseId)
-  : getFirestore(app);
+  ? initializeFirestore(app, { ignoreUndefinedProperties: true }, firestoreDatabaseId)
+  : initializeFirestore(app, { ignoreUndefinedProperties: true });
 
 // Skill requirement: Validate connection to Firestore at boot
 export async function testConnection() {

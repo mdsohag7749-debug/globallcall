@@ -39,6 +39,7 @@ import {
 } from 'firebase/firestore';
 import { db, checkIsAdmin } from '../lib/firebase';
 import { UserProfile, CallRoom as RoomType, ReportItem, AuditLogItem, Announcement } from '../types';
+import { DEFAULT_GLOBAL_ROOMS } from '../lib/defaultRooms';
 import { logAuditEvent } from '../lib/moderation';
 
 interface AdminPanelProps {
@@ -72,6 +73,17 @@ export default function AdminPanel({
     setTheme(next);
     localStorage.setItem('theme', next);
   };
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'light') {
+      root.classList.add('light-mode');
+      root.classList.remove('dark-mode');
+    } else {
+      root.classList.remove('light-mode');
+      root.classList.add('dark-mode');
+    }
+  }, [theme]);
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -137,11 +149,17 @@ export default function AdminPanel({
     const unsub = onSnapshot(
       roomsCol,
       (snapshot) => {
-        const list: RoomType[] = [];
+        const roomMap = new Map<string, RoomType>();
+        DEFAULT_GLOBAL_ROOMS.forEach((r) => roomMap.set(r.id, r));
         snapshot.forEach((docSnap) => {
-          list.push({ id: docSnap.id, ...(docSnap.data() as any) });
+          const data = docSnap.data() as any;
+          if (data.deleted) {
+            roomMap.delete(docSnap.id);
+          } else {
+            roomMap.set(docSnap.id, { id: docSnap.id, ...data });
+          }
         });
-        setRooms(list);
+        setRooms(Array.from(roomMap.values()));
       },
       (err) => {
         console.warn('Admin rooms sync error:', err);
@@ -261,7 +279,7 @@ export default function AdminPanel({
       return;
     }
     try {
-      await deleteDoc(doc(db, 'rooms', room.id));
+      await setDoc(doc(db, 'rooms', room.id), { deleted: true, closedAt: new Date().toISOString() }, { merge: true });
       showNotification('success', `Room "${room.title}" closed and deleted.`);
     } catch (err: any) {
       showNotification('error', `Failed to delete room: ${err.message}`);
@@ -274,7 +292,8 @@ export default function AdminPanel({
 
     try {
       const roomId = `admin-${Date.now().toString(36)}`;
-      const roomData = {
+      const roomData: RoomType = {
+        id: roomId,
         title: newRoomTitle.trim(),
         description: newRoomDesc.trim() || 'Official room created by Administrator',
         createdBy: currentUser?.uid || 'admin',

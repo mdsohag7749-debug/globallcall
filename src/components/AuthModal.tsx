@@ -83,14 +83,18 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
       >
         {/* Header */}
         <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-indigo-400" />
-              Join Global Calls
-            </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Create an account or jump right in to connect globally
-            </p>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-white/10 shadow-md shadow-cyan-500/10 shrink-0">
+              <img src="/logo.png" alt="Global Call" className="w-full h-full object-cover" />
+            </div>
+            <div>
+              <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
+                Join Global Calls
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Create an account or jump right in to connect globally
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}

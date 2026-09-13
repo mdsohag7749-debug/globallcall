@@ -55,6 +55,19 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Initialize theme from localStorage on initial page load
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('theme');
+    const root = document.documentElement;
+    if (savedTheme === 'light') {
+      root.classList.add('light-mode');
+      root.classList.remove('dark-mode');
+    } else {
+      root.classList.remove('light-mode');
+      root.classList.add('dark-mode');
+    }
+  }, []);
+
   // Check URL query parameters for direct room join (e.g. ?room=room-123)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -93,7 +106,11 @@ export default function App() {
   if (isLoadingAuth) {
     return (
       <div className="w-full h-dvh bg-slate-950 flex flex-col items-center justify-center text-slate-300">
-        <div className="w-12 h-12 rounded-full border-3 border-indigo-600 border-t-transparent animate-spin mb-4" />
+        <div className="relative mb-5 flex items-center justify-center">
+          <div className="absolute -inset-2 rounded-2xl bg-cyan-500/20 blur-xl animate-pulse" />
+          <img src="/logo.png" alt="Global Call" className="relative w-16 h-16 rounded-2xl shadow-xl shadow-cyan-500/20 ring-1 ring-white/10" />
+        </div>
+        <div className="w-6 h-6 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin mb-3" />
         <p className="text-sm font-medium text-slate-400">Loading Global Call...</p>
       </div>
     );

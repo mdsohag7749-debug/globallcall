@@ -489,8 +489,8 @@ export default function CallRoom({
       {/* Top Header Bar */}
       <header className="h-14 px-4 bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between z-20 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shrink-0">
-            <Globe className="w-4 h-4" />
+          <div className="w-8 h-8 rounded-lg overflow-hidden ring-1 ring-white/10 shadow-sm flex items-center justify-center shrink-0">
+            <img src="/logo.png" alt="Global Call" className="w-full h-full object-cover" />
           </div>
           <div className="truncate">
             <h2 className="text-sm sm:text-base font-semibold text-slate-100 truncate flex items-center gap-2">

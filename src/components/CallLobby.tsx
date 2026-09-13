@@ -33,7 +33,8 @@ import {
   Megaphone,
   UserCheck,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Loader2
 } from 'lucide-react';
 import { 
   collection, 
@@ -44,6 +45,7 @@ import {
 } from 'firebase/firestore';
 import { db, logOut, checkIsAdmin } from '../lib/firebase';
 import { UserProfile, CallRoom as RoomType, Announcement } from '../types';
+import { DEFAULT_GLOBAL_ROOMS } from '../lib/defaultRooms';
 import { createPlaceholderVideoStream } from '../lib/webrtc';
 import CallSettingsModal from './CallSettingsModal';
 import UserProfileModal from './UserProfileModal';
@@ -55,45 +57,6 @@ interface CallLobbyProps {
   onOpenAuth: () => void;
   onOpenAdminPanel?: () => void;
 }
-
-const DEFAULT_GLOBAL_ROOMS: RoomType[] = [
-  {
-    id: 'global-lounge-main',
-    title: 'Global Video & Audio Lounge',
-    description: 'The main open room connecting callers worldwide 24/7. Jump right in and meet engineers, designers, and creators.',
-    createdBy: 'system',
-    callType: 'video_audio',
-    isGlobal: true,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'global-audio-cafe',
-    title: 'Audio-Only Global Voice Cafe',
-    description: 'Ultra-smooth audio-only space optimized for low latency and poor internet connections. Casual talk, radio style discussions.',
-    createdBy: 'system',
-    callType: 'audio_only',
-    isGlobal: false,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'global-hangout-chill',
-    title: 'Casual Hangout & Community',
-    description: 'Relaxed space to share stories, co-work, test your webcam setup, and build international friendships without pressure.',
-    createdBy: 'system',
-    callType: 'video_audio',
-    isGlobal: false,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'webrtc-dev-04',
-    title: 'WebRTC & AI Hackers Room',
-    description: 'Live collaborative space for WebRTC developers, AI agent builders, and open source creators sharing terminal screens.',
-    createdBy: 'system',
-    callType: 'video_audio',
-    isGlobal: false,
-    createdAt: new Date().toISOString()
-  }
-];
 
 export default function CallLobby({
   currentUser,
@@ -112,6 +75,8 @@ export default function CallLobby({
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomType, setNewRoomType] = useState<'video_audio' | 'audio_only'>('video_audio');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null);
+  const [isSubmittingRoom, setIsSubmittingRoom] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [customRoomId, setCustomRoomId] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -152,10 +117,31 @@ export default function CallLobby({
   const [enteredPassword, setEnteredPassword] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
+  // Scroll-aware transparent header
+  const [scrolled, setScrolled] = useState(false);
+
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Show header background as soon as user scrolls at all
+  useEffect(() => {
+    const check = () => {
+      const scrollTop = window.scrollY ||
+        document.documentElement.scrollTop ||
+        document.body.scrollTop ||
+        0;
+      setScrolled(scrollTop > 10);
+    };
+    check(); // run once on mount
+    window.addEventListener('scroll', check, { passive: true });
+    document.addEventListener('scroll', check, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', check);
+      document.removeEventListener('scroll', check);
+    };
+  }, []);
 
   // Keyboard shortcut: Cmd/Ctrl + K to focus search
   useEffect(() => {
@@ -243,10 +229,16 @@ export default function CallLobby({
           firestoreRooms.push({ id: docSnap.id, ...docSnap.data() } as RoomType);
         });
 
-        // Merge defaults with firestore rooms (avoiding duplicates)
+        // Merge defaults with firestore rooms (avoiding duplicates and excluding deleted)
         const roomMap = new Map<string, RoomType>();
         DEFAULT_GLOBAL_ROOMS.forEach(r => roomMap.set(r.id, r));
-        firestoreRooms.forEach(r => roomMap.set(r.id, r));
+        firestoreRooms.forEach(r => {
+          if ((r as any).deleted) {
+            roomMap.delete(r.id);
+          } else {
+            roomMap.set(r.id, r);
+          }
+        });
         setRooms(Array.from(roomMap.values()));
       },
       (err) => {
@@ -424,24 +416,40 @@ export default function CallLobby({
 
   const handleCreateRoom = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newRoomTitle.trim() || !currentUser) return;
+    if (!currentUser) {
+      setShowCreateModal(false);
+      onOpenAuth();
+      return;
+    }
+    if (!newRoomTitle.trim()) {
+      setCreateRoomError('Please enter a room title.');
+      return;
+    }
+
+    setCreateRoomError(null);
+    setIsSubmittingRoom(true);
 
     const roomId = `room-${Math.random().toString(36).substring(2, 9)}`;
     const newRoom: RoomType = {
       id: roomId,
       title: newRoomTitle.trim(),
-      description: `Created by ${currentUser.displayName}`,
+      description: `Created by ${currentUser.displayName || 'Host'}`,
       createdBy: currentUser.uid,
       callType: newRoomType,
       isGlobal: false,
-      isOfficial: isAdmin,
-      isPinned: isAdmin,
-      isPrivate: isPrivateRoom,
-      isPasswordProtected: isPasswordRequired && !!newRoomPassword.trim(),
-      password: isPasswordRequired ? newRoomPassword.trim() : undefined,
-      participantLimit: newParticipantLimit > 0 ? newParticipantLimit : undefined,
+      isOfficial: Boolean(isAdmin),
+      isPinned: Boolean(isAdmin),
+      isPrivate: Boolean(isPrivateRoom),
+      isPasswordProtected: Boolean(isPasswordRequired && newRoomPassword.trim()),
       createdAt: new Date().toISOString()
     };
+
+    if (isPasswordRequired && newRoomPassword.trim()) {
+      newRoom.password = newRoomPassword.trim();
+    }
+    if (newParticipantLimit > 0) {
+      newRoom.participantLimit = newParticipantLimit;
+    }
 
     try {
       await setDoc(doc(db, 'rooms', roomId), newRoom);
@@ -452,8 +460,11 @@ export default function CallLobby({
       setIsPrivateRoom(false);
       setNewParticipantLimit(0);
       proceedWithJoin(newRoom);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to create room:', e);
+      setCreateRoomError(e?.message || 'Failed to create room. Please try again.');
+    } finally {
+      setIsSubmittingRoom(false);
     }
   };
 
@@ -535,32 +546,34 @@ export default function CallLobby({
       <div className="fixed inset-0 pointer-events-none glow-radial-cyan z-0" />
       <div className="fixed inset-0 pointer-events-none mesh-grid-pattern opacity-60 z-0" />
 
-      {/* Main Header */}
-      <header className="relative z-50 border-b border-white/[0.08] backdrop-blur-xl bg-[#060911]/75 sticky top-0 px-4 lg:px-8 py-3.5 transition-all">
+      {/* Main Header - fixed so it always stays at top regardless of parent overflow */}
+      <header className={`fixed top-0 left-0 right-0 w-full z-50 px-4 lg:px-8 py-3.5 transition-all duration-300 ${
+        scrolled
+          ? 'bg-[#060911]/90 backdrop-blur-xl border-b border-white/[0.08] shadow-lg shadow-black/30'
+          : 'bg-transparent border-b border-transparent'
+      }`}>
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           {/* Brand & Status Pill */}
           <div className="flex items-center space-x-3.5">
-            <div className="group flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-linear-to-tr from-indigo-600 via-indigo-500 to-cyan-400 p-[1px] shadow-lg shadow-indigo-500/25 transition-transform group-hover:scale-105">
-                <div className="w-full h-full bg-[#090e1c] rounded-[11px] flex items-center justify-center">
-                  <Video className="w-5 h-5 text-indigo-400 group-hover:text-cyan-300 transition-colors" />
-                </div>
+            <button
+              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+              className="group flex items-center gap-3 cursor-pointer"
+              title="Back to top"
+            >
+              <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-cyan-500/20 ring-1 ring-white/10 transition-transform group-hover:scale-105 shrink-0">
+                <img src="/logo.png" alt="Global Call Logo" className="w-full h-full object-cover" />
               </div>
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-base font-bold tracking-tight text-white flex items-center gap-1.5">
                     Global Call
                   </span>
-                  <span className="text-[10px] font-mono tracking-wider font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    P2P MESH v2.4
-                  </span>
                 </div>
                 <p className="text-[11px] text-slate-400 hidden sm:block tracking-wide">
                   Instant Global Video & Audio Connect
                 </p>
               </div>
-            </div>
+            </button>
           </div>
 
           {/* Network Stats & Actions */}
@@ -690,8 +703,8 @@ export default function CallLobby({
         </div>
       )}
 
-      {/* Main Content */}
-      <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12 space-y-12">
+      {/* Main Content - pt-16 offsets the fixed header height */}
+      <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-8 md:pb-12 space-y-12">
         {/* Hero Split Section */}
         <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center">
           {/* Left Column: Hero Copy, Badges, CTAs & Live Metrics */}
@@ -1202,44 +1215,6 @@ export default function CallLobby({
             })}
           </div>
 
-          {/* Join by Custom ID Section */}
-          <div className="mt-8 p-6 rounded-2xl glass-card border border-white/[0.08] flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div>
-              <h4 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Lock className="w-4 h-4 text-cyan-400" />
-                Have a direct Room ID or invitation code?
-              </h4>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Paste any private room ID below to jump directly into the session with your colleagues or friends
-              </p>
-            </div>
-
-            <form onSubmit={handleJoinCustomId} className="flex flex-col gap-2 w-full sm:w-auto">
-              <div className="flex items-center gap-2">
-                <input
-                  id="custom-room-id-input"
-                  type="text"
-                  placeholder="Paste Room ID (e.g. room-xyz)..."
-                  value={customRoomId}
-                  onChange={(e) => { setCustomRoomId(e.target.value); setJoinError(null); }}
-                  className="bg-slate-900/80 border border-white/[0.1] rounded-xl px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-64"
-                />
-                <button
-                  id="btn-join-custom-id"
-                  type="submit"
-                  disabled={!customRoomId.trim() || isJoiningById}
-                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition cursor-pointer shrink-0"
-                >
-                  {isJoiningById ? 'Checking...' : 'Enter'}
-                </button>
-              </div>
-              {joinError && (
-                <p className="text-xs text-rose-400 flex items-center gap-1.5">
-                  <span>⚠️</span> {joinError}
-                </p>
-              )}
-            </form>
-          </div>
         </section>
 
         {/* Feature Highlights Strip */}
@@ -1300,6 +1275,7 @@ export default function CallLobby({
       <footer className="relative z-20 border-t border-white/[0.08] bg-[#05080f]/80 mt-16 px-4 py-8">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
           <div className="flex items-center space-x-2">
+            <img src="/logo.png" alt="Global Call" className="w-5 h-5 rounded-md object-cover inline-block shrink-0" />
             <span className="font-semibold text-slate-400">Global Call Network</span>
             <span>•</span>
             <span>Powered by WebRTC & Firebase Signaling</span>
@@ -1341,6 +1317,29 @@ export default function CallLobby({
               </button>
             </div>
 
+            {createRoomError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{createRoomError}</span>
+              </div>
+            )}
+
+            {!currentUser && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center justify-between gap-2">
+                <span>রুম তৈরি করতে আগে একটি অ্যাকাউন্টে সাইন ইন করুন।</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    onOpenAuth();
+                  }}
+                  className="px-2.5 py-1 bg-amber-500 text-black font-semibold rounded-lg text-xs cursor-pointer hover:bg-amber-400"
+                >
+                  Sign In
+                </button>
+              </div>
+            )}
+
             <form onSubmit={handleCreateRoom} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
@@ -1352,7 +1351,10 @@ export default function CallLobby({
                   required
                   placeholder="e.g. Design Sync / Bangladesh Hangout"
                   value={newRoomTitle}
-                  onChange={(e) => setNewRoomTitle(e.target.value)}
+                  onChange={(e) => {
+                    setNewRoomTitle(e.target.value);
+                    if (createRoomError) setCreateRoomError(null);
+                  }}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -1437,9 +1439,11 @@ export default function CallLobby({
                 <button
                   id="btn-submit-create-room"
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md cursor-pointer"
+                  disabled={isSubmittingRoom}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md cursor-pointer disabled:opacity-60 flex items-center gap-1.5"
                 >
-                  Create & Join
+                  {isSubmittingRoom && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isSubmittingRoom ? 'Creating Room...' : 'Create & Join'}</span>
                 </button>
               </div>
             </form>
