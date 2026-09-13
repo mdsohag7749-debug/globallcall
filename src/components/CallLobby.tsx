@@ -101,6 +101,8 @@ export default function CallLobby({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [customRoomId, setCustomRoomId] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [isJoiningById, setIsJoiningById] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [activeFilter, setActiveFilter] = useState<'all' | 'video_audio' | 'audio_only' | 'popular' | 'community'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -328,25 +330,36 @@ export default function CallLobby({
     }
   };
 
-  const handleJoinCustomId = (e: FormEvent) => {
+  const handleJoinCustomId = async (e: FormEvent) => {
     e.preventDefault();
     const roomId = customRoomId.trim();
     if (!roomId) return;
 
+    setJoinError(null);
+
+    // First check if it matches a loaded room in state
     const existing = rooms.find(r => r.id === roomId);
     if (existing) {
       handleJoin(existing);
-    } else {
-      const customRoom: RoomType = {
-        id: roomId,
-        title: `Room ${roomId.slice(0, 8)}`,
-        description: 'Custom Call Room',
-        createdBy: currentUser?.uid || 'guest',
-        callType: 'video_audio',
-        isGlobal: false,
-        createdAt: new Date().toISOString()
-      };
-      handleJoin(customRoom);
+      return;
+    }
+
+    // Otherwise verify room exists in Firestore before joining
+    setIsJoiningById(true);
+    try {
+      const { getDoc: _getDoc, doc: _doc } = await import('firebase/firestore');
+      const roomSnap = await _getDoc(_doc(db, 'rooms', roomId));
+      if (!roomSnap.exists()) {
+        setJoinError('এই Room টি পাওয়া যায়নি বা Delete করা হয়েছে।');
+        setIsJoiningById(false);
+        return;
+      }
+      const data = roomSnap.data() as RoomType;
+      handleJoin({ ...data, id: roomId });
+    } catch {
+      setJoinError('Room খুঁজে পেতে সমস্যা হয়েছে। আবার চেষ্টা করুন।');
+    } finally {
+      setIsJoiningById(false);
     }
   };
 
@@ -991,23 +1004,30 @@ export default function CallLobby({
               </p>
             </div>
 
-            <form onSubmit={handleJoinCustomId} className="flex items-center gap-2 w-full sm:w-auto">
-              <input
-                id="custom-room-id-input"
-                type="text"
-                placeholder="Paste Room ID (e.g. room-xyz)..."
-                value={customRoomId}
-                onChange={(e) => setCustomRoomId(e.target.value)}
-                className="bg-slate-900/80 border border-white/[0.1] rounded-xl px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-64"
-              />
-              <button
-                id="btn-join-custom-id"
-                type="submit"
-                disabled={!customRoomId.trim()}
-                className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition cursor-pointer shrink-0"
-              >
-                Enter
-              </button>
+            <form onSubmit={handleJoinCustomId} className="flex flex-col gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2">
+                <input
+                  id="custom-room-id-input"
+                  type="text"
+                  placeholder="Paste Room ID (e.g. room-xyz)..."
+                  value={customRoomId}
+                  onChange={(e) => { setCustomRoomId(e.target.value); setJoinError(null); }}
+                  className="bg-slate-900/80 border border-white/[0.1] rounded-xl px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-64"
+                />
+                <button
+                  id="btn-join-custom-id"
+                  type="submit"
+                  disabled={!customRoomId.trim() || isJoiningById}
+                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition cursor-pointer shrink-0"
+                >
+                  {isJoiningById ? 'Checking...' : 'Enter'}
+                </button>
+              </div>
+              {joinError && (
+                <p className="text-xs text-rose-400 flex items-center gap-1.5">
+                  <span>⚠️</span> {joinError}
+                </p>
+              )}
             </form>
           </div>
         </section>

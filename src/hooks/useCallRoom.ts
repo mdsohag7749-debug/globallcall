@@ -389,13 +389,13 @@ export function useCallRoom({
                   const snap = await getDocs(collection(db, 'rooms', roomId, 'participants'));
                   if (snap.empty) {
                     await deleteDoc(doc(db, 'rooms', roomId));
-                    console.info(`Room "${roomId}" auto-deleted after being empty for 2 minutes.`);
+                    console.info(`Room "${roomId}" auto-deleted after being empty for 5 minutes.`);
                   }
                 } catch (e) {
                   console.warn('Auto-delete room failed:', e);
                 }
                 emptyRoomTimerRef.current = null;
-              }, 2 * 60 * 1000); // 2 minutes
+              }, 5 * 60 * 1000); // 5 minutes
             }
           } else {
             // Someone is in the room — cancel the timer
