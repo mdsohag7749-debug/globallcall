@@ -27,7 +27,8 @@ import {
   Sparkles,
   Wand2,
   Radio,
-  Flag
+  Flag,
+  Image as ImageIcon
 } from 'lucide-react';
 import { useCallRoom } from '../hooks/useCallRoom';
 import VideoTile from './VideoTile';
@@ -109,7 +110,7 @@ export default function CallRoom({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isBackgroundBlurred, setIsBackgroundBlurred] = useState(false);
-  const [virtualBackground, setVirtualBackground] = useState<'none' | 'studio' | 'office' | 'cyberpunk'>('none');
+  const [virtualBackground, setVirtualBackground] = useState<string>('none');
   const [isNoiseSuppression, setIsNoiseSuppression] = useState(true);
   const [reportingTarget, setReportingTarget] = useState<Participant | null>(null);
   const [hostMuteNotice, setHostMuteNotice] = useState<string | null>(null);
@@ -209,9 +210,21 @@ export default function CallRoom({
     setIsBackgroundBlurred(prev => !prev);
   };
 
-  // Noise Suppression toggle
+  // Noise Suppression toggle with dynamic WebRTC audio constraint application
   const handleToggleNoiseSuppression = () => {
-    setIsNoiseSuppression(prev => !prev);
+    setIsNoiseSuppression(prev => {
+      const next = !prev;
+      if (localStream) {
+        localStream.getAudioTracks().forEach(track => {
+          track.applyConstraints({
+            echoCancellation: next,
+            noiseSuppression: next,
+            autoGainControl: next
+          }).catch(e => console.warn('Could not apply audio constraints', e));
+        });
+      }
+      return next;
+    });
   };
 
   // Mobile Audio Unlock on first touch/interaction
@@ -685,7 +698,7 @@ export default function CallRoom({
                 {(() => {
                   const pinnedItem = allTiles.find(t => t.participant.uid === pinnedUid) || allTiles[0];
                   return (
-                    <VideoTile
+                  <VideoTile
                       participant={pinnedItem.participant}
                       stream={pinnedItem.stream}
                       isLocal={pinnedItem.isLocal}
@@ -693,6 +706,8 @@ export default function CallRoom({
                       isPinned={true}
                       isHost={pinnedItem.participant.uid === room.createdBy}
                       facingMode={pinnedItem.isLocal ? facingMode : 'user'}
+                      isBlurred={pinnedItem.isLocal ? isBackgroundBlurred : false}
+                      virtualBackground={pinnedItem.isLocal ? virtualBackground : 'none'}
                       onTogglePin={() => setPinnedUid(null)}
                       onReport={(p) => setReportingTarget(p)}
                     />
@@ -714,6 +729,8 @@ export default function CallRoom({
                         isPinned={false}
                         isHost={t.participant.uid === room.createdBy}
                         facingMode={t.isLocal ? facingMode : 'user'}
+                        isBlurred={t.isLocal ? isBackgroundBlurred : false}
+                        virtualBackground={t.isLocal ? virtualBackground : 'none'}
                         onTogglePin={() => setPinnedUid(t.participant.uid)}
                         onReport={(p) => setReportingTarget(p)}
                       />
@@ -734,6 +751,8 @@ export default function CallRoom({
                   isPinned={false}
                   isHost={t.participant.uid === room.createdBy}
                   facingMode={t.isLocal ? facingMode : 'user'}
+                  isBlurred={t.isLocal ? isBackgroundBlurred : false}
+                  virtualBackground={t.isLocal ? virtualBackground : 'none'}
                   onTogglePin={() => setPinnedUid(t.participant.uid)}
                   onReport={(p) => setReportingTarget(p)}
                 />
@@ -861,6 +880,22 @@ export default function CallRoom({
               >
                 <Sparkles className="w-4 h-4 text-cyan-400" />
                 <span>{isBackgroundBlurred ? 'Blur: ON' : 'Blur Video'}</span>
+              </button>
+
+              <button
+                id="mobile-btn-virtual-bg"
+                onClick={() => {
+                  setShowMobileMore(false);
+                  setIsSettingsOpen(true);
+                }}
+                className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs font-semibold cursor-pointer ${
+                  virtualBackground !== 'none'
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                }`}
+              >
+                <ImageIcon className="w-4 h-4 text-indigo-400" />
+                <span>{virtualBackground !== 'none' ? 'Virtual BG: ON' : 'Virtual BG'}</span>
               </button>
 
               <button
@@ -1162,6 +1197,20 @@ export default function CallRoom({
             <Sparkles className="w-5 h-5" />
           </button>
 
+          {/* Virtual Background Selector Button */}
+          <button
+            id="control-btn-virtual-bg-desktop"
+            onClick={() => setIsSettingsOpen(true)}
+            title={virtualBackground !== 'none' ? `Virtual Background Active (Click to Change)` : "Choose Virtual Background Backdrop"}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              virtualBackground !== 'none'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 ring-2 ring-indigo-400'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <ImageIcon className="w-5 h-5" />
+          </button>
+
           {/* Noise Cancellation / High Quality Audio Toggle */}
           <button
             id="control-btn-noise-suppression"
@@ -1246,6 +1295,12 @@ export default function CallRoom({
         onClose={() => setIsSettingsOpen(false)}
         roomId={room.id}
         roomTitle={room.title}
+        isBlurred={isBackgroundBlurred}
+        onToggleBlur={handleToggleBackgroundBlur}
+        virtualBackground={virtualBackground}
+        onChangeVirtualBackground={(bg) => setVirtualBackground(bg)}
+        isNoiseSuppression={isNoiseSuppression}
+        onToggleNoiseSuppression={handleToggleNoiseSuppression}
       />
 
       {/* Report User Modal */}

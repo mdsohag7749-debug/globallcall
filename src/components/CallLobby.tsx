@@ -30,7 +30,6 @@ import {
   Shield,
   Key,
   EyeOff,
-  Map as MapIcon,
   Megaphone,
   UserCheck,
   CheckCircle2,
@@ -49,7 +48,6 @@ import { createPlaceholderVideoStream } from '../lib/webrtc';
 import CallSettingsModal from './CallSettingsModal';
 import UserProfileModal from './UserProfileModal';
 import FriendsModal from './FriendsModal';
-import RoadmapModal from './RoadmapModal';
 
 interface CallLobbyProps {
   currentUser: UserProfile | null;
@@ -127,9 +125,20 @@ export default function CallLobby({
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
   });
+
+  // Apply theme class to <html> whenever theme changes
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'light') {
+      root.classList.add('light-mode');
+      root.classList.remove('dark-mode');
+    } else {
+      root.classList.remove('light-mode');
+      root.classList.add('dark-mode');
+    }
+  }, [theme]);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isFriendsOpen, setIsFriendsOpen] = useState(false);
-  const [isRoadmapOpen, setIsRoadmapOpen] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
 
   // Room creation roadmap options
@@ -569,17 +578,6 @@ export default function CallLobby({
 
 
 
-            {/* Roadmap Explorer CTA Button */}
-            <button
-              id="btn-open-roadmap"
-              onClick={() => setIsRoadmapOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-linear-to-r from-indigo-500/20 via-purple-500/20 to-pink-500/20 hover:from-indigo-500/30 hover:to-pink-500/30 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-semibold shadow-md transition cursor-pointer"
-              title="Interactive Feature Roadmap (27 Features)"
-            >
-              <MapIcon className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="hidden sm:inline">Feature Roadmap</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-indigo-500 text-white font-mono font-bold">27</span>
-            </button>
 
             {/* Dark / Light Mode Toggle */}
             <button
@@ -1574,11 +1572,7 @@ export default function CallLobby({
         />
       )}
 
-      {/* Interactive Feature Roadmap Explorer Modal */}
-      <RoadmapModal
-        isOpen={isRoadmapOpen}
-        onClose={() => setIsRoadmapOpen(false)}
-      />
+
     </div>
   );
 }

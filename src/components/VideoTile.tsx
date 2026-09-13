@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MicOff, Pin, PinOff, User as UserIcon, Monitor, VolumeX, Volume2, Shield, Crown, Flag } from 'lucide-react';
+import { MicOff, Pin, PinOff, Monitor, VolumeX, Crown, Flag } from 'lucide-react';
 import { Participant } from '../types';
 
 interface VideoTileProps {
@@ -11,6 +11,8 @@ interface VideoTileProps {
   isPinned?: boolean;
   isHost?: boolean;
   facingMode?: 'user' | 'environment';
+  isBlurred?: boolean;
+  virtualBackground?: string;
   onTogglePin?: () => void;
   onReport?: (p: Participant) => void;
 }
@@ -23,6 +25,8 @@ export default function VideoTile({
   isPinned = false,
   isHost = false,
   facingMode = 'user',
+  isBlurred = false,
+  virtualBackground = 'none',
   onTogglePin,
   onReport
 }: VideoTileProps) {
@@ -113,16 +117,69 @@ export default function VideoTile({
         />
       )}
 
-      {/* Video Element */}
+      {/* Video Element — with background blur CSS filter when isBlurred */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted={isLocal}
-        className={`w-full h-full ${participant.isScreenSharing ? 'object-contain bg-slate-950' : 'object-cover'} transition-opacity duration-300 ${
+        style={isLocal && isBlurred ? { filter: 'blur(14px)', transform: facingMode !== 'environment' && !participant.isScreenSharing ? 'scaleX(-1)' : 'none' } : undefined}
+        className={`w-full h-full ${participant.isScreenSharing ? 'object-contain bg-slate-950' : 'object-cover'} transition-[filter,opacity] duration-300 ${
           hasVideoTrack ? 'opacity-100' : 'opacity-0 absolute'
-        } ${isLocal && !participant.isScreenSharing && facingMode !== 'environment' ? 'scale-x-[-1]' : ''}`}
+        } ${isLocal && !participant.isScreenSharing && facingMode !== 'environment' && !isBlurred ? 'scale-x-[-1]' : ''}`}
       />
+
+
+      {/* Virtual background backdrop layer */}
+      {isLocal && virtualBackground !== 'none' && (
+        <div
+          className="absolute inset-0 pointer-events-none transition-all duration-500 z-[1]"
+          style={{
+            background: virtualBackground === 'studio'
+              ? 'linear-gradient(135deg, rgba(30, 27, 75, 0.88) 0%, rgba(49, 46, 129, 0.88) 50%, rgba(15, 23, 42, 0.92) 100%)'
+              : virtualBackground === 'office'
+              ? 'linear-gradient(135deg, rgba(15, 32, 39, 0.88) 0%, rgba(32, 58, 67, 0.88) 50%, rgba(44, 83, 100, 0.92) 100%)'
+              : virtualBackground === 'cyberpunk'
+              ? 'linear-gradient(135deg, rgba(13, 2, 33, 0.88) 0%, rgba(112, 26, 117, 0.88) 50%, rgba(0, 0, 16, 0.92) 100%)'
+              : `url("${virtualBackground}") center/cover no-repeat`,
+            backgroundSize: 'cover'
+          }}
+        />
+      )}
+
+      {/* Face cutout layer for Blur or Virtual Background */}
+      {isLocal && (isBlurred || virtualBackground !== 'none') && hasVideoTrack && (
+        <video
+          autoPlay
+          playsInline
+          muted
+          ref={(el) => {
+            if (el && stream) {
+              el.srcObject = stream;
+              el.play().catch(() => {});
+            }
+          }}
+          style={{
+            clipPath: 'ellipse(28% 38% at 50% 38%)',
+            transform: facingMode !== 'environment' && !participant.isScreenSharing ? 'scaleX(-1)' : 'none'
+          }}
+          className="absolute inset-0 w-full h-full object-cover transition-all duration-300 z-[2]"
+        />
+      )}
+
+      {/* Virtual background label badge */}
+      {isLocal && virtualBackground !== 'none' && (
+        <div className="absolute top-3 right-14 z-10 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-600/90 text-white border border-indigo-400/40 backdrop-blur-sm shadow-md">
+          {virtualBackground === 'studio' ? '🎙️ Studio' : virtualBackground === 'office' ? '🏢 Office' : virtualBackground === 'cyberpunk' ? '🌌 Cyberpunk' : '🖼️ Custom BG'}
+        </div>
+      )}
+
+      {/* Background Blur active badge */}
+      {isLocal && isBlurred && (
+        <div className={`absolute top-3 ${virtualBackground !== 'none' ? 'right-36' : 'right-14'} z-10 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-600/90 text-white border border-cyan-400/40 backdrop-blur-sm shadow-md`}>
+          ✨ Blur ON
+        </div>
+      )}
 
       {/* Mobile Tap-To-Unmute banner if mobile browser prevented autoplay */}
       {!isLocal && audioAutoplayBlocked && (

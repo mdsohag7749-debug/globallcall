@@ -78,8 +78,10 @@ export default function CallSidebar({
   onSendReaction,
   chatMessageCount = 0,
   onChatMessageCountChange,
-  onNewChatMessage
+  onNewChatMessage,
+  onReportUser
 }: CallSidebarProps) {
+
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
