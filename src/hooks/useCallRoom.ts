@@ -139,14 +139,17 @@ export function useCallRoom({
       setupSpeakingDetector(stream);
 
       // Add tracks to any peer connections that were created before media was ready
-      Object.values(peerConnections.current).forEach((pc) => {
-        const existingSenderKinds = pc.getSenders().map(s => s.track?.kind).filter(Boolean);
-        stream.getTracks().forEach(track => {
-          if (!existingSenderKinds.includes(track.kind)) {
-            pc.addTrack(track, stream);
-          }
+      if (stream) {
+        const activeStream = stream;
+        (Object.values(peerConnections.current) as RTCPeerConnection[]).forEach((pc: RTCPeerConnection) => {
+          const existingSenderKinds = pc.getSenders().map(s => s.track?.kind).filter(Boolean);
+          activeStream.getTracks().forEach(track => {
+            if (!existingSenderKinds.includes(track.kind)) {
+              pc.addTrack(track, activeStream);
+            }
+          });
         });
-      });
+      }
     }
 
     initMedia();

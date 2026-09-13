@@ -373,8 +373,12 @@ export default function CallRoom({
   return (
     <div 
       id="call-room-container"
-      className="relative w-full h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden select-none"
+      className="relative w-full h-[100dvh] bg-[#060911] text-slate-100 flex flex-col overflow-hidden select-none"
     >
+      {/* Ambient Backdrop Lights */}
+      <div className="fixed inset-0 pointer-events-none glow-radial-indigo z-0" />
+      <div className="fixed inset-0 pointer-events-none glow-radial-cyan z-0" />
+      <div className="fixed inset-0 pointer-events-none mesh-grid-pattern opacity-40 z-0" />
       {/* Top Header Bar */}
       <header className="h-14 px-4 bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between z-20 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
