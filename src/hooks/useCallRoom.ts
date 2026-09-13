@@ -221,6 +221,8 @@ export function useCallRoom({
     };
 
     setDoc(participantRef, participantData, { merge: true }).catch(console.error);
+    // Clear emptySince timestamp since room now has an active participant
+    setDoc(doc(db, 'rooms', roomId), { emptySince: null }, { merge: true }).catch(() => {});
 
     // Heartbeat ping every 10s
     const pingInterval = setInterval(() => {
@@ -798,6 +800,13 @@ export function useCallRoom({
     // Remove from Firestore
     try {
       await deleteDoc(doc(db, 'rooms', roomId, 'participants', currentUser.uid));
+      // If no participants remain, mark room as empty so the 5-minute auto-delete timer can track it
+      const partSnap = await getDocs(collection(db, 'rooms', roomId, 'participants'));
+      if (partSnap.empty) {
+        await setDoc(doc(db, 'rooms', roomId), {
+          emptySince: new Date().toISOString()
+        }, { merge: true });
+      }
     } catch {
       // ignore
     }

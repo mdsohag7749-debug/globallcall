@@ -34,12 +34,16 @@ import {
   UserCheck,
   CheckCircle2,
   AlertTriangle,
-  Loader2
+  Loader2,
+  Copy,
+  Check,
+  Clock
 } from 'lucide-react';
 import { 
   collection, 
   onSnapshot, 
   doc, 
+  getDoc,
   setDoc,
   deleteDoc
 } from 'firebase/firestore';
@@ -85,6 +89,15 @@ export default function CallLobby({
   const [activeFilter, setActiveFilter] = useState<'all' | 'video_audio' | 'audio_only' | 'popular' | 'community'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showJoinByIdModal, setShowJoinByIdModal] = useState(false);
+  const [copiedRoomId, setCopiedRoomId] = useState<string | null>(null);
+  const [nowTimestamp, setNowTimestamp] = useState(() => Date.now());
+
+  // Update nowTimestamp every 10s for live empty room auto-delete countdown
+  useEffect(() => {
+    const timer = setInterval(() => setNowTimestamp(Date.now()), 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Roadmap extra states
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -327,21 +340,54 @@ export default function CallLobby({
     return () => unsub();
   }, []);
 
-  // Auto-close (5 min) check for empty custom rooms
+  // Auto-delete (5 min) check for empty custom rooms
   useEffect(() => {
-    const now = Date.now();
-    rooms.forEach(async (r) => {
-      if (r.createdBy !== 'system' && !r.isGlobal && !r.isOfficial) {
-        const count = roomParticipantsCount[r.id] || 0;
-        const createdTime = new Date(r.createdAt).getTime();
-        // If room has 0 participants and was created over 5 minutes ago
-        if (count === 0 && now - createdTime > 5 * 60 * 1000) {
+    const checkAndCleanupEmptyRooms = async () => {
+      const now = Date.now();
+      const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+      for (const r of rooms) {
+        // Only target custom rooms (skip system, official, or default global rooms)
+        if (r.createdBy === 'system' || r.isGlobal || r.isOfficial) continue;
+
+        const count = roomParticipantsCount[r.id] ?? 0;
+
+        if (count === 0) {
+          // Room is empty (0 participants)
+          if (!r.emptySince) {
+            // Set emptySince to room creation time or current time
+            const emptyTime = r.createdAt || new Date().toISOString();
+            try {
+              await setDoc(doc(db, 'rooms', r.id), { emptySince: emptyTime }, { merge: true });
+            } catch (e) {
+              console.warn('Failed to set emptySince for room:', r.id, e);
+            }
+          } else {
+            // Check if room has been empty for at least 5 minutes
+            const emptySinceMs = new Date(r.emptySince).getTime();
+            if (now - emptySinceMs >= FIVE_MINUTES_MS) {
+              try {
+                await deleteDoc(doc(db, 'rooms', r.id));
+                console.info(`Room "${r.title}" (${r.id}) deleted after being empty for 5 minutes.`);
+              } catch (e) {
+                console.warn(`Failed to delete empty room ${r.id}:`, e);
+              }
+            }
+          }
+        } else if (r.emptySince) {
+          // Room has active callers, clear emptySince
           try {
-            await deleteDoc(doc(db, 'rooms', r.id));
-          } catch (e) {}
+            await setDoc(doc(db, 'rooms', r.id), { emptySince: null }, { merge: true });
+          } catch (e) {
+            console.warn('Failed to clear emptySince for active room:', r.id, e);
+          }
         }
       }
-    });
+    };
+
+    checkAndCleanupEmptyRooms();
+    const interval = setInterval(checkAndCleanupEmptyRooms, 15000);
+    return () => clearInterval(interval);
   }, [rooms, roomParticipantsCount]);
 
   const proceedWithJoin = (room: RoomType) => {
@@ -362,6 +408,7 @@ export default function CallLobby({
       title: room.title,
       description: room.description || '',
       createdBy: room.createdBy || currentUser?.uid || 'guest',
+      createdByName: room.createdByName || currentUser?.displayName || 'Host',
       callType: room.callType || 'video_audio',
       isGlobal: !!room.isGlobal,
       isOfficial: !!room.isOfficial,
@@ -370,6 +417,7 @@ export default function CallLobby({
       isPasswordProtected: !!room.isPasswordProtected,
       password: room.password || null,
       participantLimit: room.participantLimit || null,
+      emptySince: room.emptySince || null,
       createdAt: room.createdAt || new Date().toISOString()
     }, { merge: true }).catch(console.error);
 
@@ -430,18 +478,21 @@ export default function CallLobby({
     setIsSubmittingRoom(true);
 
     const roomId = `room-${Math.random().toString(36).substring(2, 9)}`;
+    const nowIso = new Date().toISOString();
     const newRoom: RoomType = {
       id: roomId,
       title: newRoomTitle.trim(),
       description: `Created by ${currentUser.displayName || 'Host'}`,
       createdBy: currentUser.uid,
+      createdByName: currentUser.displayName || 'Host',
       callType: newRoomType,
       isGlobal: false,
       isOfficial: Boolean(isAdmin),
       isPinned: Boolean(isAdmin),
       isPrivate: Boolean(isPrivateRoom),
       isPasswordProtected: Boolean(isPasswordRequired && newRoomPassword.trim()),
-      createdAt: new Date().toISOString()
+      emptySince: nowIso, // Start with emptySince so countdown is tracked if room stays empty
+      createdAt: nowIso
     };
 
     if (isPasswordRequired && newRoomPassword.trim()) {
@@ -468,16 +519,18 @@ export default function CallLobby({
     }
   };
 
-  const handleJoinCustomId = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleJoinCustomId = async (e?: FormEvent) => {
+    if (e) e.preventDefault();
     const roomId = customRoomId.trim();
     if (!roomId) return;
 
     setJoinError(null);
 
     // First check if it matches a loaded room in state
-    const existing = rooms.find(r => r.id === roomId);
+    const existing = rooms.find(r => r.id.toLowerCase() === roomId.toLowerCase());
     if (existing) {
+      setShowJoinByIdModal(false);
+      setCustomRoomId('');
       handleJoin(existing);
       return;
     }
@@ -485,14 +538,15 @@ export default function CallLobby({
     // Otherwise verify room exists in Firestore before joining
     setIsJoiningById(true);
     try {
-      const { getDoc: _getDoc, doc: _doc } = await import('firebase/firestore');
-      const roomSnap = await _getDoc(_doc(db, 'rooms', roomId));
+      const roomSnap = await getDoc(doc(db, 'rooms', roomId));
       if (!roomSnap.exists()) {
         setJoinError('এই Room টি পাওয়া যায়নি বা Delete করা হয়েছে।');
         setIsJoiningById(false);
         return;
       }
       const data = roomSnap.data() as RoomType;
+      setShowJoinByIdModal(false);
+      setCustomRoomId('');
       handleJoin({ ...data, id: roomId });
     } catch {
       setJoinError('Room খুঁজে পেতে সমস্যা হয়েছে। আবার চেষ্টা করুন।');
@@ -505,6 +559,19 @@ export default function CallLobby({
   const filteredRooms = useMemo(() => {
     const list = rooms.filter((r) => {
       const query = searchQuery.toLowerCase().trim();
+      const isCreator = Boolean(currentUser && r.createdBy === currentUser.uid);
+      const isSuperAdmin = Boolean(isAdmin);
+
+      // Private room filtering rules:
+      // 1. If user created the private room (or is super admin), always show it in their lobby
+      // 2. For other users, private rooms are hidden UNLESS searched by Room ID
+      if (r.isPrivate && !isCreator && !isSuperAdmin) {
+        if (!query) return false;
+        // Only reveal if the search query matches the room ID
+        const matchesRoomId = r.id.toLowerCase().includes(query);
+        if (!matchesRoomId) return false;
+      }
+
       const matchesSearch = 
         !query ||
         r.title.toLowerCase().includes(query) ||
@@ -512,9 +579,6 @@ export default function CallLobby({
         (r.description && r.description.toLowerCase().includes(query));
 
       if (!matchesSearch) return false;
-
-      // Public / private toggle: Hide private rooms unless searched
-      if (r.isPrivate && !query) return false;
 
       if (activeFilter === 'video_audio') return r.callType !== 'audio_only';
       if (activeFilter === 'audio_only') return r.callType === 'audio_only';
@@ -531,7 +595,7 @@ export default function CallLobby({
     });
 
     return list;
-  }, [rooms, searchQuery, activeFilter, roomParticipantsCount]);
+  }, [rooms, searchQuery, activeFilter, roomParticipantsCount, currentUser, isAdmin]);
 
   // Total online participant calculation
   const totalActiveCallers = useMemo(() => {
@@ -996,6 +1060,20 @@ export default function CallLobby({
                   </div>
                 </div>
 
+                {/* Join by ID Button */}
+                <button
+                  id="btn-open-join-by-id"
+                  onClick={() => {
+                    setJoinError(null);
+                    setShowJoinByIdModal(true);
+                  }}
+                  className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 hover:border-cyan-500/50 shadow-lg shadow-cyan-500/10 transition-all shrink-0 group active:scale-95 cursor-pointer"
+                  title="Join any public or private room directly with Room ID"
+                >
+                  <Key className="w-4 h-4 text-cyan-400 group-hover:rotate-12 transition-transform" />
+                  <span>Join with ID</span>
+                </button>
+
                 {/* Create Room CTA Button */}
                 <button
                   id="btn-create-room-modal"
@@ -1135,10 +1213,33 @@ export default function CallLobby({
                         )}
 
                         {room.isPrivate && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1" title="Private Room">
-                            <EyeOff className="w-2.5 h-2.5" /> Private
-                          </span>
+                          currentUser && room.createdBy === currentUser.uid ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center gap-1" title="You created this private room. It is visible to you and anyone searching by Room ID.">
+                              <EyeOff className="w-2.5 h-2.5" /> Your Private Room
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1" title="Private Room">
+                              <EyeOff className="w-2.5 h-2.5" /> Private Room
+                            </span>
+                          )
                         )}
+
+                        {/* Empty room 5-minute auto-delete live countdown */}
+                        {!room.isGlobal && !room.isOfficial && room.createdBy !== 'system' && count === 0 && (() => {
+                          const emptyTime = new Date(room.emptySince || room.createdAt).getTime();
+                          const elapsed = Math.max(0, nowTimestamp - emptyTime);
+                          const remainingMs = Math.max(0, 5 * 60 * 1000 - elapsed);
+                          const remainingMins = Math.ceil(remainingMs / 60000);
+                          return (
+                            <span 
+                              className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 animate-pulse" 
+                              title="Room will be deleted after 5 minutes if empty"
+                            >
+                              <Clock className="w-2.5 h-2.5 text-amber-400" />
+                              <span>Auto-delete: ~{remainingMins}m</span>
+                            </span>
+                          );
+                        })()}
 
                         {room.isGlobal && !room.isPinned && (
                           <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
@@ -1198,7 +1299,24 @@ export default function CallLobby({
                   <div className="mt-6 pt-4 border-t border-white/[0.08] flex items-center justify-between gap-3">
                     <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 bg-slate-900/50 px-2.5 py-1.5 rounded-lg border border-white/5">
                       <span>ID:</span>
-                      <span className="text-slate-300 max-w-[110px] truncate">{room.id}</span>
+                      <span className="text-slate-300 max-w-[100px] truncate" title={room.id}>{room.id}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard.writeText(room.id);
+                          setCopiedRoomId(room.id);
+                          setTimeout(() => setCopiedRoomId(null), 2000);
+                        }}
+                        className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition cursor-pointer ml-0.5"
+                        title="Copy Room ID"
+                      >
+                        {copiedRoomId === room.id ? (
+                          <Check className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
                     </div>
 
                     <button
@@ -1213,6 +1331,34 @@ export default function CallLobby({
                 </article>
               );
             })}
+
+            {/* Empty Search / Category State */}
+            {filteredRooms.length === 0 && (
+              <div className="text-center py-12 px-4 rounded-2xl glass-card border border-white/[0.08] space-y-3 col-span-full">
+                <div className="w-12 h-12 rounded-2xl bg-slate-800/80 border border-white/10 flex items-center justify-center mx-auto text-slate-400">
+                  <Search className="w-6 h-6 text-slate-400" />
+                </div>
+                <h4 className="text-sm font-bold text-white">No rooms found</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  {searchQuery
+                    ? `No active rooms match "${searchQuery}". If this is a private room ID, you can join directly with the Room ID.`
+                    : 'There are no active rooms in this category right now.'}
+                </p>
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomRoomId(searchQuery.trim());
+                      setShowJoinByIdModal(true);
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-semibold shadow-md transition cursor-pointer"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Try Joining Room "{searchQuery.trim()}"</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
         </section>
@@ -1574,6 +1720,79 @@ export default function CallLobby({
           onClose={() => setIsFriendsOpen(false)}
           currentUser={currentUser}
         />
+      )}
+
+      {/* Join by Room ID Modal */}
+      {showJoinByIdModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm bg-slate-900 border border-white/[0.12] rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Key className="w-4 h-4 text-cyan-400" />
+                Join Room by ID
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowJoinByIdModal(false);
+                  setJoinError(null);
+                }}
+                className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Enter the unique Room ID (e.g. <span className="font-mono text-cyan-300">room-xyz123</span>) to connect directly to any public or private room.
+            </p>
+
+            {joinError && (
+              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{joinError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleJoinCustomId} className="space-y-3">
+              <div>
+                <input
+                  type="text"
+                  autoFocus
+                  required
+                  placeholder="Paste Room ID here..."
+                  value={customRoomId}
+                  onChange={(e) => {
+                    setCustomRoomId(e.target.value);
+                    if (joinError) setJoinError(null);
+                  }}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowJoinByIdModal(false);
+                    setJoinError(null);
+                  }}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl hover:bg-slate-750 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isJoiningById || !customRoomId.trim()}
+                  className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl shadow-md shadow-cyan-600/30 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isJoiningById && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isJoiningById ? 'Connecting...' : 'Join Room'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
 
