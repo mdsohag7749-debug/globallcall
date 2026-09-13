@@ -157,7 +157,7 @@ export default function CallSidebar({
       {/* Slide-out Sidebar Drawer */}
       <aside 
         id="call-sidebar-drawer"
-        className={`fixed md:relative inset-y-0 right-0 z-40 w-full sm:w-88 md:w-96 bg-slate-900/95 border-l border-slate-800 flex flex-col h-full backdrop-blur-xl shadow-2xl transition-all duration-300 ease-in-out shrink-0 ${
+        className={`fixed md:relative inset-y-0 right-0 z-40 w-full sm:w-88 md:w-96 bg-slate-900/95 border-l border-slate-800 flex flex-col h-[100dvh] md:h-full backdrop-blur-xl shadow-2xl transition-all duration-300 ease-in-out shrink-0 ${
           isOpen 
             ? 'translate-x-0 opacity-100 pointer-events-auto' 
             : 'translate-x-full md:translate-x-0 md:w-0 md:opacity-0 md:border-transparent pointer-events-none overflow-hidden'

@@ -19,7 +19,9 @@ import {
   Copy,
   Check,
   AlertCircle,
-  X
+  X,
+  FlipHorizontal,
+  MoreHorizontal
 } from 'lucide-react';
 import { useCallRoom } from '../hooks/useCallRoom';
 import VideoTile from './VideoTile';
@@ -62,6 +64,7 @@ export default function CallRoom({
   const [callDuration, setCallDuration] = useState(0);
   const [floatingReactions, setFloatingReactions] = useState<ReactionItem[]>([]);
   const [showReactionMenu, setShowReactionMenu] = useState(false);
+  const [showMobileMore, setShowMobileMore] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [screenShareNotice, setScreenShareNotice] = useState<string | null>(null);
 
@@ -100,6 +103,11 @@ export default function CallRoom({
     isConnecting,
     isLocalSpeaking,
     activeSpeakerId,
+    facingMode,
+    canSwitchCamera,
+    isSwitchingCamera,
+    switchCamera,
+    unlockAudio,
     toggleAudio,
     toggleVideo,
     toggleScreenShare,
@@ -111,6 +119,19 @@ export default function CallRoom({
     initialVideoOff,
     onCallEnded: onLeave
   });
+
+  // Mobile Audio Unlock on first touch/interaction
+  useEffect(() => {
+    const handleUnlock = () => {
+      unlockAudio();
+    };
+    window.addEventListener('touchstart', handleUnlock, { passive: true, once: true });
+    window.addEventListener('click', handleUnlock, { once: true });
+    return () => {
+      window.removeEventListener('touchstart', handleUnlock);
+      window.removeEventListener('click', handleUnlock);
+    };
+  }, [unlockAudio]);
 
   // Screen share trigger using Screen Capture API with error notification
   const handleToggleScreenShare = async () => {
@@ -304,14 +325,15 @@ export default function CallRoom({
     return list;
   }, [currentUser, localStream, remoteStreams, participants, isAudioMuted, isVideoOff, isScreenSharing, isLocalSpeaking, activeSpeakerId]);
 
-  // Determine grid template classes based on tile count
+  // Determine grid template classes based on tile count with mobile portrait optimization
   const getGridClasses = (count: number) => {
     if (pinnedUid) return 'flex flex-col md:flex-row gap-3';
-    if (count <= 1) return 'grid grid-cols-1 max-w-4xl mx-auto';
-    if (count === 2) return 'grid grid-cols-1 md:grid-cols-2 max-w-5xl mx-auto';
-    if (count <= 4) return 'grid grid-cols-1 sm:grid-cols-2 max-w-6xl mx-auto';
-    if (count <= 6) return 'grid grid-cols-2 md:grid-cols-3 max-w-7xl mx-auto';
-    return 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 max-w-7xl mx-auto';
+    if (count <= 1) return 'grid grid-cols-1 w-full h-full max-w-4xl mx-auto';
+    // Mobile portrait: 2 rows, 1 col (stacked 50/50); Desktop: 2 cols side-by-side
+    if (count === 2) return 'grid grid-cols-1 grid-rows-2 md:grid-rows-1 md:grid-cols-2 w-full h-full max-w-5xl mx-auto gap-2.5 sm:gap-4';
+    if (count <= 4) return 'grid grid-cols-1 sm:grid-cols-2 w-full h-full max-w-6xl mx-auto gap-2.5 sm:gap-4';
+    if (count <= 6) return 'grid grid-cols-2 md:grid-cols-3 w-full h-full max-w-7xl mx-auto gap-2.5 sm:gap-4';
+    return 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 w-full h-full max-w-7xl mx-auto gap-2.5 sm:gap-4';
   };
 
   const handleToggleParticipants = () => {
@@ -351,7 +373,7 @@ export default function CallRoom({
   return (
     <div 
       id="call-room-container"
-      className="relative w-full h-screen bg-slate-950 text-slate-100 flex flex-col overflow-hidden select-none"
+      className="relative w-full h-[100dvh] bg-slate-950 text-slate-100 flex flex-col overflow-hidden select-none"
     >
       {/* Top Header Bar */}
       <header className="h-14 px-4 bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between z-20 shrink-0">
@@ -571,6 +593,7 @@ export default function CallRoom({
                       isLocal={pinnedItem.isLocal}
                       isSpeaking={pinnedItem.isSpeaking}
                       isPinned={true}
+                      facingMode={pinnedItem.isLocal ? facingMode : 'user'}
                       onTogglePin={() => setPinnedUid(null)}
                     />
                   );
@@ -589,6 +612,7 @@ export default function CallRoom({
                         isLocal={t.isLocal}
                         isSpeaking={t.isSpeaking}
                         isPinned={false}
+                        facingMode={t.isLocal ? facingMode : 'user'}
                         onTogglePin={() => setPinnedUid(t.participant.uid)}
                       />
                     </div>
@@ -597,7 +621,7 @@ export default function CallRoom({
             </div>
           ) : (
             /* Dynamic Auto-Grid Layout */
-            <div className={`w-full h-full gap-3 sm:gap-4 items-center justify-center ${getGridClasses(allTiles.length)}`}>
+            <div className={`w-full h-full gap-2 sm:gap-4 items-center justify-center ${getGridClasses(allTiles.length)}`}>
               {allTiles.map(t => (
                 <VideoTile
                   key={t.participant.uid}
@@ -606,6 +630,7 @@ export default function CallRoom({
                   isLocal={t.isLocal}
                   isSpeaking={t.isSpeaking}
                   isPinned={false}
+                  facingMode={t.isLocal ? facingMode : 'user'}
                   onTogglePin={() => setPinnedUid(t.participant.uid)}
                 />
               ))}
@@ -635,12 +660,209 @@ export default function CallRoom({
         />
       </div>
 
+      {/* Mobile "More Actions" Slide-up Sheet */}
+      {showMobileMore && (
+        <>
+          <div 
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs z-30 sm:hidden animate-fade-in"
+            onClick={() => setShowMobileMore(false)}
+          />
+          <div 
+            id="mobile-more-actions-sheet"
+            className="fixed inset-x-3 bottom-24 z-40 sm:hidden bg-slate-900/95 border border-slate-800 rounded-3xl p-4 shadow-2xl backdrop-blur-xl space-y-4 animate-in fade-in slide-in-from-bottom-4 text-slate-100"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <Smile className="w-3.5 h-3.5 text-amber-400" />
+                Quick Reactions
+              </span>
+              <button 
+                onClick={() => setShowMobileMore(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Quick Reactions emoji row */}
+            <div className="flex items-center justify-between gap-1 overflow-x-auto py-1">
+              {['👍', '❤️', '🔥', '🎉', '👏', '😂', '🚀', '👋'].map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => {
+                    handleSendReaction(emoji);
+                    setShowMobileMore(false);
+                  }}
+                  className="w-10 h-10 rounded-2xl bg-slate-800/90 hover:bg-slate-700 active:scale-110 flex items-center justify-center text-xl transition shadow-sm cursor-pointer shrink-0"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+
+            {/* Grid of secondary actions */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                id="mobile-btn-participants"
+                onClick={() => {
+                  setShowMobileMore(false);
+                  handleToggleParticipants();
+                }}
+                className="p-3 rounded-2xl bg-slate-800 hover:bg-slate-750 border border-slate-700 flex items-center gap-2.5 text-xs font-semibold text-slate-200 cursor-pointer"
+              >
+                <Users className="w-4 h-4 text-indigo-400" />
+                <span>Participants ({allTiles.length})</span>
+              </button>
+
+              <button
+                id="mobile-btn-screenshare"
+                onClick={() => {
+                  setShowMobileMore(false);
+                  handleToggleScreenShare();
+                }}
+                className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs font-semibold cursor-pointer ${
+                  isScreenSharing
+                    ? 'bg-blue-600 border-blue-500 text-white'
+                    : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                }`}
+              >
+                {isScreenSharing ? (
+                  <ScreenShareOff className="w-4 h-4" />
+                ) : (
+                  <ScreenShare className="w-4 h-4 text-blue-400" />
+                )}
+                <span>{isScreenSharing ? 'Stop Share' : 'Share Screen'}</span>
+              </button>
+
+              <button
+                id="mobile-btn-copy-link"
+                onClick={() => {
+                  copyRoomInvite();
+                  setTimeout(() => setShowMobileMore(false), 1200);
+                }}
+                className="p-3 rounded-2xl bg-slate-800 hover:bg-slate-750 border border-slate-700 flex items-center gap-2.5 text-xs font-semibold text-slate-200 cursor-pointer"
+              >
+                {copiedLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-slate-400" />}
+                <span>{copiedLink ? 'Link Copied' : 'Copy Invite'}</span>
+              </button>
+
+              <button
+                id="mobile-btn-settings"
+                onClick={() => {
+                  setShowMobileMore(false);
+                  setIsSettingsOpen(true);
+                }}
+                className="p-3 rounded-2xl bg-slate-800 hover:bg-slate-750 border border-slate-700 flex items-center gap-2.5 text-xs font-semibold text-slate-200 cursor-pointer"
+              >
+                <Settings className="w-4 h-4 text-slate-400" />
+                <span>Call Settings</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Floating Bottom Control Bar */}
-      <footer className="h-20 bg-slate-900/90 backdrop-blur-xl border-t border-slate-800/90 px-4 flex items-center justify-center z-20 shrink-0">
-        <div className="flex items-center gap-2 sm:gap-3.5">
-          {/* Microphone Toggle */}
+      <footer className="h-20 pb-safe bg-slate-900/90 backdrop-blur-xl border-t border-slate-800/90 px-3 sm:px-4 flex items-center justify-center z-20 shrink-0">
+        {/* Mobile Compact Toolbar (< sm) */}
+        <div className="flex sm:hidden items-center justify-between w-full max-w-sm px-1 gap-1.5">
+          {/* Mic */}
           <button
             id="control-btn-mic"
+            onClick={toggleAudio}
+            title={isAudioMuted ? "Unmute Microphone" : "Mute Microphone"}
+            className={`p-3 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative ${
+              isAudioMuted
+                ? 'bg-rose-600 text-white'
+                : 'bg-slate-800 text-slate-100 border border-slate-700'
+            }`}
+          >
+            {isAudioMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            {isLocalSpeaking && !isAudioMuted && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+            )}
+          </button>
+
+          {/* Camera Video Toggle */}
+          <button
+            id="control-btn-video"
+            onClick={toggleVideo}
+            title={isVideoOff ? "Turn On Camera" : "Turn Off Camera"}
+            className={`p-3 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              isVideoOff
+                ? 'bg-rose-600 text-white'
+                : 'bg-slate-800 text-slate-100 border border-slate-700'
+            }`}
+          >
+            {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
+          </button>
+
+          {/* Flip Camera (Front / Rear) for Mobile */}
+          <button
+            id="control-btn-flip-camera"
+            onClick={switchCamera}
+            disabled={isSwitchingCamera || isVideoOff}
+            title={facingMode === 'user' ? "Switch to Back Camera" : "Switch to Front Camera"}
+            className={`p-3 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              isVideoOff
+                ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500 border border-slate-800'
+                : isSwitchingCamera
+                ? 'bg-indigo-600 text-white animate-pulse'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 active:scale-95'
+            }`}
+          >
+            <FlipHorizontal className={`w-5 h-5 ${isSwitchingCamera ? 'animate-spin' : ''}`} />
+          </button>
+
+          {/* In-Call Chat Drawer Toggle */}
+          <button
+            id="control-btn-chat"
+            onClick={handleToggleChat}
+            title="In-Call Chat & Reactions"
+            className={`p-3 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative ${
+              isSidebarOpen && sidebarTab === 'chat'
+                ? 'bg-indigo-600 text-white ring-2 ring-indigo-400/50'
+                : 'bg-slate-800 text-slate-100 border border-slate-700'
+            }`}
+          >
+            <MessageSquare className="w-5 h-5" />
+            {unreadChatCount > 0 && (
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-rose-500 text-white ring-2 ring-slate-900 animate-pulse">
+                {unreadChatCount > 9 ? '9+' : unreadChatCount}
+              </span>
+            )}
+          </button>
+
+          {/* Mobile "More" Menu Toggle */}
+          <button
+            id="control-btn-mobile-more"
+            onClick={() => setShowMobileMore(prev => !prev)}
+            title="More actions (Reactions, Users, Settings)"
+            className={`p-3 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              showMobileMore
+                ? 'bg-indigo-600 text-white ring-2 ring-indigo-400/50'
+                : 'bg-slate-800 text-slate-100 border border-slate-700'
+            }`}
+          >
+            <MoreHorizontal className="w-5 h-5" />
+          </button>
+
+          {/* End / Leave Call */}
+          <button
+            id="control-btn-leave"
+            onClick={leaveCall}
+            title="Leave Call"
+            className="p-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-semibold transition-all shadow-lg active:scale-95 cursor-pointer flex items-center justify-center"
+          >
+            <PhoneOff className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Desktop Expanded Toolbar (>= sm) */}
+        <div className="hidden sm:flex items-center gap-2 sm:gap-3.5">
+          {/* Microphone Toggle */}
+          <button
+            id="control-btn-mic-desktop"
             onClick={toggleAudio}
             title={isAudioMuted ? "Unmute Microphone" : "Mute Microphone"}
             className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative ${
@@ -657,7 +879,7 @@ export default function CallRoom({
 
           {/* Camera Toggle */}
           <button
-            id="control-btn-video"
+            id="control-btn-video-desktop"
             onClick={toggleVideo}
             title={isVideoOff ? "Turn On Camera" : "Turn Off Camera"}
             className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
@@ -669,11 +891,28 @@ export default function CallRoom({
             {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
           </button>
 
+          {/* Camera Flip (Desktop with multi-webcam or touch laptop) */}
+          <button
+            id="control-btn-flip-camera-desktop"
+            onClick={switchCamera}
+            disabled={isSwitchingCamera || isVideoOff}
+            title={facingMode === 'user' ? "Switch to Environment / Back Camera" : "Switch to Front Camera"}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              isVideoOff
+                ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500'
+                : isSwitchingCamera
+                ? 'bg-indigo-600 text-white animate-pulse'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 active:scale-95'
+            }`}
+          >
+            <FlipHorizontal className={`w-5 h-5 ${isSwitchingCamera ? 'animate-spin' : ''}`} />
+          </button>
+
           {/* Screen Capture API Button */}
           <button
             id="control-btn-screenshare"
             onClick={handleToggleScreenShare}
-            title={isScreenSharing ? "Stop Sharing Screen (Screen Capture Active)" : "Share Your Screen (Screen Capture API)"}
+            title={isScreenSharing ? "Stop Sharing Screen" : "Share Your Screen"}
             className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative group ${
               isScreenSharing
                 ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 ring-2 ring-blue-400/80'
@@ -712,7 +951,7 @@ export default function CallRoom({
 
           {/* In-Call Chat Drawer Toggle */}
           <button
-            id="control-btn-chat"
+            id="control-btn-chat-desktop"
             onClick={handleToggleChat}
             title="In-Call Chat & Reactions"
             className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative ${
@@ -763,7 +1002,7 @@ export default function CallRoom({
 
           {/* End / Leave Call */}
           <button
-            id="control-btn-leave"
+            id="control-btn-leave-desktop"
             onClick={leaveCall}
             title="Leave Call"
             className="px-5 sm:px-6 py-3.5 sm:py-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-semibold transition-all shadow-lg hover:shadow-rose-600/30 active:scale-95 cursor-pointer flex items-center gap-2"

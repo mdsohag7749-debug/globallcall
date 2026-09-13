@@ -40,6 +40,9 @@ export function useCallRoom({
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [canSwitchCamera, setCanSwitchCamera] = useState(false);
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
 
   // References to keep state across async Firestore callbacks
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
@@ -48,6 +51,28 @@ export function useCallRoom({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const processedSignals = useRef<Set<string>>(new Set());
+  const facingModeRef = useRef<'user' | 'environment'>('user');
+  facingModeRef.current = facingMode;
+
+  // Detect if device has multiple cameras or is mobile touch device
+  useEffect(() => {
+    async function checkCameraSwitchCapability() {
+      try {
+        if (!navigator.mediaDevices?.enumerateDevices) {
+          const isMobile = Boolean(navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+          setCanSwitchCamera(isMobile);
+          return;
+        }
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+        setCanSwitchCamera(videoDevices.length > 1 || Boolean(isMobile));
+      } catch {
+        setCanSwitchCamera(Boolean(navigator.maxTouchPoints && navigator.maxTouchPoints > 0));
+      }
+    }
+    checkCameraSwitchCapability();
+  }, []);
 
   // 1. Initialize local media
   useEffect(() => {
@@ -59,14 +84,20 @@ export function useCallRoom({
       let stream: MediaStream | null = null;
 
       try {
-        // Try requesting both audio and video
+        // Mobile and Desktop friendly media constraints
+        const videoConstraints = !initialVideoOff ? {
+          facingMode: 'user',
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 }
+        } : false;
+
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
           },
-          video: !initialVideoOff ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false
+          video: videoConstraints
         });
       } catch (err: any) {
         console.warn('Full getUserMedia failed, attempting fallback:', err);
@@ -106,6 +137,16 @@ export function useCallRoom({
 
       // Setup audio analyzer for speaking detection
       setupSpeakingDetector(stream);
+
+      // Add tracks to any peer connections that were created before media was ready
+      Object.values(peerConnections.current).forEach((pc) => {
+        const existingSenderKinds = pc.getSenders().map(s => s.track?.kind).filter(Boolean);
+        stream.getTracks().forEach(track => {
+          if (!existingSenderKinds.includes(track.kind)) {
+            pc.addTrack(track, stream);
+          }
+        });
+      });
     }
 
     initMedia();
@@ -193,7 +234,27 @@ export function useCallRoom({
       window.removeEventListener('beforeunload', cleanup);
       cleanup();
     };
-  }, [roomId, currentUser.uid, currentUser.displayName, currentUser.photoURL, isAudioMuted, isVideoOff, isScreenSharing]);
+    // NOTE: intentionally excludes isAudioMuted/isVideoOff/isScreenSharing to avoid
+    // re-registering the participant on every toggle (those are updated via setDoc in toggleAudio/toggleVideo)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, currentUser.uid, currentUser.displayName, currentUser.photoURL]);
+
+  const pendingIceCandidates = useRef<Record<string, RTCIceCandidateInit[]>>({});
+
+  // Helper to drain pending ICE candidates once remoteDescription is set
+  const drainCandidateQueue = async (remoteUid: string, pc: RTCPeerConnection) => {
+    const queue = pendingIceCandidates.current[remoteUid];
+    if (queue && queue.length > 0) {
+      for (const cand of queue) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (e) {
+          console.warn('Failed to add queued ICE candidate:', e);
+        }
+      }
+      pendingIceCandidates.current[remoteUid] = [];
+    }
+  };
 
   // Create WebRTC Peer Connection helper
   const createPeerConnection = useCallback((remoteUid: string) => {
@@ -204,10 +265,14 @@ export function useCallRoom({
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.current[remoteUid] = pc;
 
-    // Add local tracks
+    // Add local tracks if available
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStreamRef.current!);
+        try {
+          pc.addTrack(track, localStreamRef.current!);
+        } catch (e) {
+          console.warn('Error adding track to PC:', e);
+        }
       });
     }
 
@@ -238,7 +303,6 @@ export function useCallRoom({
     // Connection state logging & cleanup
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        // Clean up connection
         setRemoteStreams(prev => {
           const next = { ...prev };
           delete next[remoteUid];
@@ -249,6 +313,42 @@ export function useCallRoom({
 
     return pc;
   }, [currentUser.uid, roomId]);
+
+  // Initiate offer helper to ensure media tracks are present
+  const sendOfferToPeer = useCallback(async (remoteUid: string) => {
+    try {
+      const pc = createPeerConnection(remoteUid);
+
+      // Make sure local tracks are added
+      if (localStreamRef.current) {
+        const existingSenderKinds = pc.getSenders().map(s => s.track?.kind).filter(Boolean);
+        localStreamRef.current.getTracks().forEach(t => {
+          if (!existingSenderKinds.includes(t.kind)) {
+            pc.addTrack(t, localStreamRef.current!);
+          }
+        });
+      }
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
+      await pc.setLocalDescription(offer);
+
+      if (pc.localDescription) {
+        const signalData = {
+          from: currentUser.uid,
+          to: remoteUid,
+          type: 'offer',
+          payload: JSON.stringify(pc.localDescription),
+          createdAt: serverTimestamp()
+        };
+        await addDoc(collection(db, 'rooms', roomId, 'signals'), signalData);
+      }
+    } catch (err) {
+      console.warn(`Error offering to ${remoteUid}:`, err);
+    }
+  }, [createPeerConnection, currentUser.uid, roomId]);
 
   // 3. Listen to participants list in Firestore
   useEffect(() => {
@@ -270,6 +370,7 @@ export function useCallRoom({
           if (!currentUids.has(uid) && uid !== currentUser.uid) {
             peerConnections.current[uid]?.close();
             delete peerConnections.current[uid];
+            delete pendingIceCandidates.current[uid];
             setRemoteStreams(prev => {
               const next = { ...prev };
               delete next[uid];
@@ -278,30 +379,17 @@ export function useCallRoom({
           }
         });
 
-        // Initiate connection to new participants (Tie-breaker: lower UID creates offer to higher UID)
-        list.forEach(remoteUser => {
-          if (remoteUser.uid === currentUser.uid) return;
+        // Initiate connection to remote participants
+        // Tie-breaker: lower UID creates offer to higher UID when media is ready
+        if (localStreamRef.current) {
+          list.forEach(remoteUser => {
+            if (remoteUser.uid === currentUser.uid) return;
 
-          // If this user is the initiator (currentUser.uid < remoteUser.uid)
-          if (currentUser.uid < remoteUser.uid && !peerConnections.current[remoteUser.uid]) {
-            const pc = createPeerConnection(remoteUser.uid);
-            pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
-              .then(offer => pc.setLocalDescription(offer))
-              .then(() => {
-                if (pc.localDescription) {
-                  const signalData = {
-                    from: currentUser.uid,
-                    to: remoteUser.uid,
-                    type: 'offer',
-                    payload: JSON.stringify(pc.localDescription),
-                    createdAt: serverTimestamp()
-                  };
-                  return addDoc(collection(db, 'rooms', roomId, 'signals'), signalData);
-                }
-              })
-              .catch(err => console.warn(`Error offering to ${remoteUser.uid}:`, err));
-          }
-        });
+            if (currentUser.uid < remoteUser.uid && !peerConnections.current[remoteUser.uid]) {
+              sendOfferToPeer(remoteUser.uid);
+            }
+          });
+        }
       },
       (err) => {
         console.warn('Call participants listener error:', err);
@@ -309,7 +397,7 @@ export function useCallRoom({
     );
 
     return () => unsubscribe();
-  }, [roomId, currentUser.uid, createPeerConnection]);
+  }, [roomId, currentUser.uid, sendOfferToPeer]);
 
   // 4. Listen to WebRTC signals directed to current user
   useEffect(() => {
@@ -335,8 +423,22 @@ export function useCallRoom({
             try {
               if (signal.type === 'offer') {
                 const pc = createPeerConnection(remoteUid);
+
+                // Add local tracks if not present
+                if (localStreamRef.current) {
+                  const existingSenderKinds = pc.getSenders().map(s => s.track?.kind).filter(Boolean);
+                  localStreamRef.current.getTracks().forEach(t => {
+                    if (!existingSenderKinds.includes(t.kind)) {
+                      pc.addTrack(t, localStreamRef.current!);
+                    }
+                  });
+                }
+
                 const offerDesc = new RTCSessionDescription(JSON.parse(signal.payload));
                 await pc.setRemoteDescription(offerDesc);
+
+                // Drain any ICE candidates received before the offer was set
+                await drainCandidateQueue(remoteUid, pc);
 
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
@@ -353,12 +455,24 @@ export function useCallRoom({
                 if (pc && pc.signalingState !== 'stable') {
                   const answerDesc = new RTCSessionDescription(JSON.parse(signal.payload));
                   await pc.setRemoteDescription(answerDesc);
+
+                  // Drain queued ICE candidates
+                  await drainCandidateQueue(remoteUid, pc);
                 }
               } else if (signal.type === 'ice') {
+                const candidateInit: RTCIceCandidateInit = JSON.parse(signal.payload);
                 const pc = peerConnections.current[remoteUid] || createPeerConnection(remoteUid);
-                if (pc) {
-                  const candidate = new RTCIceCandidate(JSON.parse(signal.payload));
-                  await pc.addIceCandidate(candidate).catch(() => {});
+
+                if (pc.remoteDescription && pc.remoteDescription.type) {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidateInit)).catch(e => {
+                    console.warn('addIceCandidate failed:', e);
+                  });
+                } else {
+                  // Queue candidate until setRemoteDescription finishes
+                  if (!pendingIceCandidates.current[remoteUid]) {
+                    pendingIceCandidates.current[remoteUid] = [];
+                  }
+                  pendingIceCandidates.current[remoteUid].push(candidateInit);
                 }
               }
 
@@ -516,6 +630,99 @@ export function useCallRoom({
     }
   }, [roomId, currentUser.uid, stopScreenShare]);
 
+  // Switch / Flip Camera (Front / Environment) for mobile and multi-camera devices
+  const switchCamera = useCallback(async () => {
+    if (isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+    const nextFacingMode = facingModeRef.current === 'user' ? 'environment' : 'user';
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextFacingMode },
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 }
+        },
+        audio: false
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) {
+        throw new Error('No video track returned when switching camera.');
+      }
+
+      newVideoTrack.enabled = !isVideoOffRef.current;
+
+      // Update peer connections
+      Object.values(peerConnections.current).forEach((pc: RTCPeerConnection) => {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(newVideoTrack).catch(err => {
+            console.warn('Sender replaceTrack error during camera switch:', err);
+          });
+        }
+      });
+
+      // Update local stream
+      if (localStreamRef.current) {
+        const oldTrack = localStreamRef.current.getVideoTracks()[0];
+        if (oldTrack) {
+          oldTrack.stop();
+          localStreamRef.current.removeTrack(oldTrack);
+        }
+        localStreamRef.current.addTrack(newVideoTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      }
+
+      setFacingMode(nextFacingMode);
+      facingModeRef.current = nextFacingMode;
+    } catch (err: any) {
+      console.warn('Camera switch by facingMode failed, trying fallback device enumeration:', err);
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter(d => d.kind === 'videoinput');
+        if (videoInputs.length > 1) {
+          const currentTrack = localStreamRef.current?.getVideoTracks()[0];
+          const currentDeviceId = currentTrack?.getSettings()?.deviceId;
+          const nextDevice = videoInputs.find(d => d.deviceId !== currentDeviceId) || videoInputs[0];
+          if (nextDevice) {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: { exact: nextDevice.deviceId } },
+              audio: false
+            });
+            const fallbackTrack = fallbackStream.getVideoTracks()[0];
+            if (fallbackTrack) {
+              fallbackTrack.enabled = !isVideoOffRef.current;
+              Object.values(peerConnections.current).forEach((pc: RTCPeerConnection) => {
+                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) sender.replaceTrack(fallbackTrack);
+              });
+              if (localStreamRef.current) {
+                const old = localStreamRef.current.getVideoTracks()[0];
+                if (old) { old.stop(); localStreamRef.current.removeTrack(old); }
+                localStreamRef.current.addTrack(fallbackTrack);
+                setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+              }
+              setFacingMode(nextFacingMode);
+              facingModeRef.current = nextFacingMode;
+            }
+          }
+        }
+      } catch (fallbackErr) {
+        console.warn('Fallback camera switch failed:', fallbackErr);
+      }
+    } finally {
+      setIsSwitchingCamera(false);
+    }
+  }, [isSwitchingCamera]);
+
+  // Audio unlock helper for mobile Safari/Chrome autoplay restrictions
+  const unlockAudio = useCallback(() => {
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume().catch(() => {});
+    }
+  }, []);
+
   // Toggle Screen Sharing
   const toggleScreenShare = useCallback(async () => {
     if (isScreenSharingRef.current) {
@@ -561,6 +768,11 @@ export function useCallRoom({
     isLocalSpeaking,
     activeSpeakerId,
     connectionError,
+    facingMode,
+    canSwitchCamera,
+    isSwitchingCamera,
+    switchCamera,
+    unlockAudio,
     toggleAudio,
     toggleVideo,
     toggleScreenShare,

@@ -51,9 +51,9 @@ export default function CallSettingsModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
       <div 
         id="call-settings-dialog"
-        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden text-slate-100"
+        className="w-full max-w-md max-h-[90dvh] flex flex-col bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden text-slate-100"
       >
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0">
           <h3 className="font-semibold text-lg text-slate-100 flex items-center gap-2">
             Call Settings & Info
           </h3>
@@ -65,7 +65,7 @@ export default function CallSettingsModal({
           </button>
         </div>
 
-        <div className="p-5 space-y-5">
+        <div className="p-5 space-y-5 overflow-y-auto flex-1">
           {/* Room info & invite link */}
           <div className="p-3.5 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-2">
             <div className="flex items-center justify-between">

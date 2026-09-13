@@ -17,7 +17,8 @@ import {
   Shield,
   Zap,
   Volume2,
-  Download
+  Download,
+  FlipHorizontal
 } from 'lucide-react';
 import { 
   collection, 
@@ -79,6 +80,8 @@ export default function CallLobby({
   const [roomParticipantsCount, setRoomParticipantsCount] = useState<Record<string, number>>({});
   const [micMuted, setMicMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomType, setNewRoomType] = useState<'video_audio' | 'audio_only'>('video_audio');
@@ -97,7 +100,7 @@ export default function CallLobby({
     async function setupPreview() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480 },
+          video: { facingMode: 'user', width: 640, height: 480 },
           audio: true
         });
         if (isCancelled) {
@@ -216,11 +219,53 @@ export default function CallLobby({
     }
   };
 
+  const flipCamera = async () => {
+    if (isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+    const nextFacing = facingMode === 'user' ? 'environment' : 'user';
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextFacing },
+          width: 640,
+          height: 480
+        },
+        audio: !micMuted
+      });
+
+      if (previewStream) {
+        previewStream.getVideoTracks().forEach(t => t.stop());
+      }
+      setPreviewStream(stream);
+      if (previewVideoRef.current) {
+        previewVideoRef.current.srcObject = stream;
+      }
+      setFacingMode(nextFacing);
+    } catch (e) {
+      console.warn('Lobby camera switch failed:', e);
+    } finally {
+      setIsSwitchingCamera(false);
+    }
+  };
+
   const handleJoin = (room: RoomType) => {
     if (!currentUser) {
       onOpenAuth();
       return;
     }
+
+    // Immediately stop hardware preview tracks so CallRoom can capture the real camera & mic without resource lock
+    if (previewStream) {
+      previewStream.getTracks().forEach(t => t.stop());
+      setPreviewStream(null);
+    }
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
     // Ensure room exists in Firestore
     const roomRef = doc(db, 'rooms', room.id);
     setDoc(roomRef, {
@@ -282,9 +327,9 @@ export default function CallLobby({
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-[100dvh] pb-safe bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navigation */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30 px-4 sm:px-8 py-3.5 flex items-center justify-between">
+      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30 px-3 sm:px-8 py-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-linear-to-tr from-indigo-600 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-600/20">
             <Video className="w-5 h-5" />
@@ -459,7 +504,9 @@ export default function CallLobby({
                   autoPlay
                   playsInline
                   muted
-                  className={`w-full h-full object-cover scale-x-[-1] transition-opacity duration-200 ${
+                  className={`w-full h-full object-cover transition-opacity duration-200 ${
+                    facingMode === 'user' ? 'scale-x-[-1]' : ''
+                  } ${
                     videoOff ? 'opacity-0' : 'opacity-100'
                   }`}
                 />
@@ -475,6 +522,11 @@ export default function CallLobby({
                 <div className="absolute top-3 left-3 px-2.5 py-1 rounded-md bg-black/60 backdrop-blur-md text-white text-[11px] font-medium flex items-center gap-1.5">
                   <span className={`w-2 h-2 rounded-full ${micMuted ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
                   {currentUser?.displayName || 'Preview User'}
+                </div>
+
+                {/* Camera facing indicator */}
+                <div className="absolute top-3 right-3 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-md text-slate-300 text-[10px] font-medium">
+                  {facingMode === 'user' ? 'Front Cam' : 'Rear Cam'}
                 </div>
               </div>
 
@@ -497,11 +549,11 @@ export default function CallLobby({
             </div>
 
             {/* Toggle controls */}
-            <div className="pt-4 flex items-center justify-center gap-3">
+            <div className="pt-4 flex items-center justify-center gap-2 sm:gap-3">
               <button
                 id="preview-toggle-mic"
                 onClick={toggleMic}
-                className={`flex-1 py-2.5 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition cursor-pointer ${
+                className={`flex-1 py-2.5 px-3 rounded-xl font-medium text-xs flex items-center justify-center gap-1.5 transition cursor-pointer ${
                   micMuted
                     ? 'bg-rose-600/20 text-rose-300 border border-rose-600/40 hover:bg-rose-600/30'
                     : 'bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700'
@@ -514,14 +566,31 @@ export default function CallLobby({
               <button
                 id="preview-toggle-video"
                 onClick={toggleVideo}
-                className={`flex-1 py-2.5 px-4 rounded-xl font-medium text-xs flex items-center justify-center gap-2 transition cursor-pointer ${
+                className={`flex-1 py-2.5 px-3 rounded-xl font-medium text-xs flex items-center justify-center gap-1.5 transition cursor-pointer ${
                   videoOff
                     ? 'bg-rose-600/20 text-rose-300 border border-rose-600/40 hover:bg-rose-600/30'
                     : 'bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700'
                 }`}
               >
                 {videoOff ? <VideoOff className="w-4 h-4 text-rose-400" /> : <Video className="w-4 h-4 text-emerald-400" />}
-                <span>{videoOff ? 'Camera Off' : 'Camera On'}</span>
+                <span>{videoOff ? 'Cam Off' : 'Cam On'}</span>
+              </button>
+
+              <button
+                id="preview-flip-camera"
+                onClick={flipCamera}
+                disabled={videoOff || isSwitchingCamera}
+                title={facingMode === 'user' ? "Switch to Rear / Back Camera" : "Switch to Front Camera"}
+                className={`py-2.5 px-3 rounded-xl font-medium text-xs flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                  videoOff
+                    ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500 border border-slate-700'
+                    : isSwitchingCamera
+                    ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 animate-pulse'
+                    : 'bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 active:scale-95'
+                }`}
+              >
+                <FlipHorizontal className={`w-4 h-4 ${isSwitchingCamera ? 'animate-spin' : ''}`} />
+                <span>Flip</span>
               </button>
             </div>
           </div>

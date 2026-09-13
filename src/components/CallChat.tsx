@@ -501,7 +501,7 @@ export default function CallChat({
       {/* Chat Composer Input Form */}
       <form
         onSubmit={onSubmitForm}
-        className="p-3 border-t border-slate-800 bg-slate-950/80 flex items-center gap-2 shrink-0"
+        className="p-3 pb-safe border-t border-slate-800 bg-slate-950/80 flex items-center gap-2 shrink-0"
       >
         <button
           type="button"

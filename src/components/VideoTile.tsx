@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { MicOff, Pin, PinOff, User as UserIcon, Monitor } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { MicOff, Pin, PinOff, User as UserIcon, Monitor, VolumeX, Volume2 } from 'lucide-react';
 import { Participant } from '../types';
 
 interface VideoTileProps {
@@ -9,6 +9,7 @@ interface VideoTileProps {
   isLocal?: boolean;
   isSpeaking?: boolean;
   isPinned?: boolean;
+  facingMode?: 'user' | 'environment';
   onTogglePin?: () => void;
 }
 
@@ -18,15 +19,75 @@ export default function VideoTile({
   isLocal = false,
   isSpeaking = false,
   isPinned = false,
+  facingMode = 'user',
   onTogglePin
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioAutoplayBlocked, setAudioAutoplayBlocked] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    const video = videoRef.current;
+    if (video) {
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+      video.srcObject = stream;
+      if (stream) {
+        video.play().catch(() => {});
+      }
     }
-  }, [stream]);
+
+    // Explicit audio element for remote stream so audio always plays cleanly even if camera is off
+    if (!isLocal && audioRef.current) {
+      const audio = audioRef.current;
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('webkit-playsinline', 'true');
+      audio.srcObject = stream;
+      if (stream) {
+        audio.play().then(() => {
+          setAudioAutoplayBlocked(false);
+        }).catch(e => {
+          console.warn('Audio autoplay prevented on mobile, awaiting user touch:', e);
+          if (e.name === 'NotAllowedError') {
+            setAudioAutoplayBlocked(true);
+          }
+        });
+      }
+    }
+
+    if (!stream) return;
+
+    const handleTrackChange = () => {
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+      if (!isLocal && audioRef.current) {
+        audioRef.current.srcObject = null;
+        audioRef.current.srcObject = stream;
+        audioRef.current.play().then(() => {
+          setAudioAutoplayBlocked(false);
+        }).catch(() => {});
+      }
+    };
+
+    stream.addEventListener('addtrack', handleTrackChange);
+    stream.addEventListener('removetrack', handleTrackChange);
+
+    return () => {
+      stream.removeEventListener('addtrack', handleTrackChange);
+      stream.removeEventListener('removetrack', handleTrackChange);
+    };
+  }, [stream, isLocal]);
+
+  const handleTileTap = () => {
+    if (audioAutoplayBlocked && audioRef.current) {
+      audioRef.current.play().then(() => {
+        setAudioAutoplayBlocked(false);
+      }).catch(() => {});
+    }
+  };
 
   const hasVideoTrack = stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled && (!participant.isVideoOff || participant.isScreenSharing);
 
@@ -39,6 +100,15 @@ export default function VideoTile({
           : 'border-slate-800 hover:border-slate-700'
       }`}
     >
+      {/* Hidden Audio Element for Remote Participants to guarantee sound playback */}
+      {!isLocal && (
+        <audio
+          ref={audioRef}
+          autoPlay
+          playsInline
+        />
+      )}
+
       {/* Video Element */}
       <video
         ref={videoRef}
@@ -47,8 +117,20 @@ export default function VideoTile({
         muted={isLocal}
         className={`w-full h-full ${participant.isScreenSharing ? 'object-contain bg-slate-950' : 'object-cover'} transition-opacity duration-300 ${
           hasVideoTrack ? 'opacity-100' : 'opacity-0 absolute'
-        } ${isLocal && !participant.isScreenSharing ? 'scale-x-[-1]' : ''}`}
+        } ${isLocal && !participant.isScreenSharing && facingMode !== 'environment' ? 'scale-x-[-1]' : ''}`}
       />
+
+      {/* Mobile Tap-To-Unmute banner if mobile browser prevented autoplay */}
+      {!isLocal && audioAutoplayBlocked && (
+        <button
+          id={`btn-unmute-audio-${participant.uid}`}
+          onClick={handleTileTap}
+          className="absolute inset-x-4 top-14 z-20 p-2.5 rounded-xl bg-amber-500/90 text-slate-950 text-xs font-bold shadow-xl backdrop-blur-md flex items-center justify-center gap-2 cursor-pointer animate-bounce"
+        >
+          <VolumeX className="w-4 h-4" />
+          <span>Tap to unmute audio</span>
+        </button>
+      )}
 
       {/* Fallback Avatar when Camera is Off */}
       {!hasVideoTrack && (
@@ -82,15 +164,17 @@ export default function VideoTile({
       )}
 
       {/* Top badges: Pin button & Screen Share tag */}
-      <div className="absolute top-3 right-3 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+      <div className={`absolute top-3 right-3 flex items-center gap-2 z-10 ${
+        isPinned ? 'opacity-100' : 'opacity-90 sm:opacity-0 sm:group-hover:opacity-100'
+      } transition-opacity duration-150`}>
         {onTogglePin && (
           <button
             id={`btn-pin-${participant.uid}`}
             onClick={onTogglePin}
             title={isPinned ? "Unpin video" : "Pin video"}
-            className="p-1.5 rounded-lg bg-slate-900/80 backdrop-blur-md text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-2 sm:p-1.5 rounded-xl bg-slate-900/80 backdrop-blur-md text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/60 shadow-md transition-colors cursor-pointer"
           >
-            {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
+            {isPinned ? <PinOff className="w-4 h-4 text-amber-400" /> : <Pin className="w-4 h-4" />}
           </button>
         )}
       </div>

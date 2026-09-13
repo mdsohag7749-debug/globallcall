@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+  .pt-safe {
+    padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
+  }
+  .h-dvh {
+    height: 100dvh;
+  }
+  .min-h-dvh {
+    min-height: 100dvh;
+  }
+}
+
+/* Prevent unwanted mobile double tap delay */
+button, a, input, select {
+  touch-action: manipulation;
+}
+
+/* Smooth scrolling on mobile devices */
+* {
+  -webkit-overflow-scrolling: touch;
+}
