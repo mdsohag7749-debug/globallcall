@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MicOff, Pin, PinOff, User as UserIcon, Monitor, VolumeX, Volume2 } from 'lucide-react';
+import { MicOff, Pin, PinOff, User as UserIcon, Monitor, VolumeX, Volume2, Shield, Crown, Flag } from 'lucide-react';
 import { Participant } from '../types';
 
 interface VideoTileProps {
@@ -9,8 +9,10 @@ interface VideoTileProps {
   isLocal?: boolean;
   isSpeaking?: boolean;
   isPinned?: boolean;
+  isHost?: boolean;
   facingMode?: 'user' | 'environment';
   onTogglePin?: () => void;
+  onReport?: (p: Participant) => void;
 }
 
 export default function VideoTile({
@@ -19,8 +21,10 @@ export default function VideoTile({
   isLocal = false,
   isSpeaking = false,
   isPinned = false,
+  isHost = false,
   facingMode = 'user',
-  onTogglePin
+  onTogglePin,
+  onReport
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -163,10 +167,20 @@ export default function VideoTile({
         </div>
       )}
 
-      {/* Top badges: Pin button & Screen Share tag */}
+      {/* Top badges: Pin, Report, Screen Share, and Raised Hand */}
       <div className={`absolute top-3 right-3 flex items-center gap-2 z-10 ${
         isPinned ? 'opacity-100' : 'opacity-90 sm:opacity-0 sm:group-hover:opacity-100'
       } transition-opacity duration-150`}>
+        {!isLocal && onReport && (
+          <button
+            onClick={() => onReport(participant)}
+            title="Report this user"
+            className="p-2 sm:p-1.5 rounded-xl bg-slate-900/80 backdrop-blur-md text-slate-400 hover:text-rose-400 hover:bg-slate-800 border border-slate-700/60 shadow-md transition-colors cursor-pointer"
+          >
+            <Flag className="w-4 h-4" />
+          </button>
+        )}
+
         {onTogglePin && (
           <button
             id={`btn-pin-${participant.uid}`}
@@ -179,17 +193,35 @@ export default function VideoTile({
         )}
       </div>
 
-      {participant.isScreenSharing && (
-        <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-600/90 text-white text-xs font-medium shadow-sm backdrop-blur-sm">
-          <Monitor className="w-3.5 h-3.5" />
-          <span>Screen Sharing</span>
+      <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
+        {/* Raised Hand Indicator Badge */}
+        {participant.raisedHand && (
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/30 animate-bounce">
+            <span>✋</span>
+            <span>Hand Raised</span>
+          </div>
+        )}
+
+        {participant.isScreenSharing && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-600/90 text-white text-xs font-medium shadow-sm backdrop-blur-sm">
+            <Monitor className="w-3.5 h-3.5" />
+            <span>Screen Sharing</span>
+          </div>
+        )}
+      </div>
+
+      {/* Host Mute Warning Banner */}
+      {participant.isMutedByHost && (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-10 px-2.5 py-0.5 rounded-full bg-rose-950/80 border border-rose-500/40 text-rose-300 text-[10px] font-semibold flex items-center gap-1">
+          <MicOff className="w-3 h-3" /> Muted by Host
         </div>
       )}
 
-      {/* Bottom status bar: Name + Mic state */}
+      {/* Bottom status bar: Name + Mic state + Host Badge */}
       <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950/70 backdrop-blur-md text-white text-xs sm:text-sm font-medium border border-white/10 shadow-sm max-w-[85%] truncate">
-          <span className="truncate">
+        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950/70 backdrop-blur-md text-white text-xs sm:text-sm font-medium border border-white/10 shadow-sm max-w-[85%] truncate">
+          <span className="truncate flex items-center gap-1">
+            {isHost && <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
             {participant.displayName} {isLocal && '(You)'}
           </span>
           {isSpeaking && !participant.isAudioMuted && (

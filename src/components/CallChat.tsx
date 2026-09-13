@@ -15,6 +15,7 @@ import {
 import { collection, query, orderBy, limit, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { UserProfile, ChatMessage } from '../types';
+import { censorText, checkSpamRate } from '../lib/moderation';
 
 interface CallChatProps {
   roomId: string;
@@ -183,10 +184,23 @@ export default function CallChat({
     setShowScrollBottom(false);
   };
 
+  const [spamWarning, setSpamWarning] = useState<string | null>(null);
+
   // Send message handler
   const handleSendMessage = async (textToSend?: string) => {
-    const text = (textToSend ?? inputText).trim();
-    if (!text || isSending) return;
+    const rawText = (textToSend ?? inputText).trim();
+    if (!rawText || isSending) return;
+
+    // Spam rate limit check
+    const spamCheck = checkSpamRate(currentUser.uid);
+    if (spamCheck.isSpam) {
+      setSpamWarning(spamCheck.reason || 'Please slow down your messages.');
+      setTimeout(() => setSpamWarning(null), 3000);
+      return;
+    }
+
+    // Word filter / Profanity censor
+    const { cleanText } = censorText(rawText);
 
     setInputText('');
     setShowEmojiPicker(false);
@@ -197,7 +211,7 @@ export default function CallChat({
         senderId: currentUser.uid,
         senderName: currentUser.displayName || 'Guest',
         senderPhoto: currentUser.photoURL || '',
-        text,
+        text: cleanText,
         type: 'text',
         createdAt: serverTimestamp()
       });
@@ -463,6 +477,14 @@ export default function CallChat({
           <ArrowDown className="w-3.5 h-3.5" />
           <span>New messages</span>
         </button>
+      )}
+
+      {/* Anti-Spam / Rate Limit Notice */}
+      {spamWarning && (
+        <div className="px-3 py-1.5 bg-rose-950/90 border-t border-rose-500/50 text-rose-300 text-xs font-medium flex items-center gap-1.5 animate-in fade-in shrink-0">
+          <span>⚠️</span>
+          <span>{spamWarning}</span>
+        </div>
       )}
 
       {/* Quick Chips Bar */}

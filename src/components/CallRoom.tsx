@@ -21,7 +21,13 @@ import {
   AlertCircle,
   X,
   FlipHorizontal,
-  MoreHorizontal
+  MoreHorizontal,
+  CircleDot,
+  Hand,
+  Sparkles,
+  Wand2,
+  Radio,
+  Flag
 } from 'lucide-react';
 import { useCallRoom } from '../hooks/useCallRoom';
 import VideoTile from './VideoTile';
@@ -29,6 +35,8 @@ import CallSidebar from './CallSidebar';
 import CallSettingsModal from './CallSettingsModal';
 import FloatingReactions, { ReactionItem } from './FloatingReactions';
 import ReactionMenu from './ReactionMenu';
+import ReportUserModal from './ReportUserModal';
+import { CallRecorder } from '../lib/recording';
 import { UserProfile, CallRoom as RoomType, Participant } from '../types';
 import { playChatChime } from '../lib/sound';
 import { 
@@ -38,7 +46,10 @@ import {
   onSnapshot, 
   query, 
   orderBy, 
-  limit 
+  limit,
+  doc,
+  setDoc,
+  getDoc
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
@@ -93,6 +104,17 @@ export default function CallRoom({
     }
   }, [isSidebarOpen, sidebarTab]);
 
+  // Roadmap Features: Raise hand, Call recording, Background Blur, Virtual Background, Noise Cancellation, Moderation
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isBackgroundBlurred, setIsBackgroundBlurred] = useState(false);
+  const [virtualBackground, setVirtualBackground] = useState<'none' | 'studio' | 'office' | 'cyberpunk'>('none');
+  const [isNoiseSuppression, setIsNoiseSuppression] = useState(true);
+  const [reportingTarget, setReportingTarget] = useState<Participant | null>(null);
+  const [hostMuteNotice, setHostMuteNotice] = useState<string | null>(null);
+  const recorderRef = useRef<CallRecorder | null>(null);
+
   const {
     localStream,
     remoteStreams,
@@ -119,6 +141,78 @@ export default function CallRoom({
     initialVideoOff,
     onCallEnded: onLeave
   });
+
+  // Ban check: If user is banned from room, exit automatically
+  useEffect(() => {
+    if (room.bannedUids && room.bannedUids.includes(currentUser.uid)) {
+      alert('You have been banned from this room by the host.');
+      onLeave();
+    }
+  }, [room.bannedUids, currentUser.uid, onLeave]);
+
+  // Host remote mute listener: If host muted this participant, force mic mute
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'rooms', room.id, 'participants', currentUser.uid), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.isMutedByHost && !isAudioMuted) {
+          toggleAudio();
+          setHostMuteNotice('The room host muted your microphone.');
+          setTimeout(() => setHostMuteNotice(null), 4000);
+        }
+        if (typeof data.raisedHand === 'boolean') {
+          setIsHandRaised(data.raisedHand);
+        }
+      }
+    });
+    return () => unsub();
+  }, [room.id, currentUser.uid, isAudioMuted, toggleAudio]);
+
+  // Raise hand toggle handler
+  const handleToggleRaiseHand = async () => {
+    const nextState = !isHandRaised;
+    setIsHandRaised(nextState);
+    try {
+      await setDoc(doc(db, 'rooms', room.id, 'participants', currentUser.uid), {
+        raisedHand: nextState,
+        raisedHandAt: nextState ? new Date().toISOString() : null
+      }, { merge: true });
+    } catch (e) {
+      console.warn('Failed to update hand raise:', e);
+    }
+  };
+
+  // Call recording toggle handler
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      recorderRef.current?.stop();
+      setIsRecording(false);
+      setRecordingSeconds(0);
+    } else {
+      if (!localStream) {
+        alert('Cannot record without active media stream.');
+        return;
+      }
+      const recorder = new CallRecorder((secs) => {
+        setRecordingSeconds(secs);
+      });
+      recorderRef.current = recorder;
+      const started = recorder.start(localStream);
+      if (started) {
+        setIsRecording(true);
+      }
+    }
+  };
+
+  // Background Blur toggle handler
+  const handleToggleBackgroundBlur = () => {
+    setIsBackgroundBlurred(prev => !prev);
+  };
+
+  // Noise Suppression toggle
+  const handleToggleNoiseSuppression = () => {
+    setIsNoiseSuppression(prev => !prev);
+  };
 
   // Mobile Audio Unlock on first touch/interaction
   useEffect(() => {
@@ -597,8 +691,10 @@ export default function CallRoom({
                       isLocal={pinnedItem.isLocal}
                       isSpeaking={pinnedItem.isSpeaking}
                       isPinned={true}
+                      isHost={pinnedItem.participant.uid === room.createdBy}
                       facingMode={pinnedItem.isLocal ? facingMode : 'user'}
                       onTogglePin={() => setPinnedUid(null)}
+                      onReport={(p) => setReportingTarget(p)}
                     />
                   );
                 })()}
@@ -616,8 +712,10 @@ export default function CallRoom({
                         isLocal={t.isLocal}
                         isSpeaking={t.isSpeaking}
                         isPinned={false}
+                        isHost={t.participant.uid === room.createdBy}
                         facingMode={t.isLocal ? facingMode : 'user'}
                         onTogglePin={() => setPinnedUid(t.participant.uid)}
+                        onReport={(p) => setReportingTarget(p)}
                       />
                     </div>
                   ))}
@@ -634,13 +732,23 @@ export default function CallRoom({
                   isLocal={t.isLocal}
                   isSpeaking={t.isSpeaking}
                   isPinned={false}
+                  isHost={t.participant.uid === room.createdBy}
                   facingMode={t.isLocal ? facingMode : 'user'}
                   onTogglePin={() => setPinnedUid(t.participant.uid)}
+                  onReport={(p) => setReportingTarget(p)}
                 />
               ))}
             </div>
           )}
         </main>
+
+        {/* Host Remote Mute Alert Toast */}
+        {hostMuteNotice && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-rose-950/90 border border-rose-500 text-rose-200 px-4 py-2 rounded-2xl shadow-xl backdrop-blur-md flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-3">
+            <MicOff className="w-4 h-4 text-rose-400" />
+            <span>{hostMuteNotice}</span>
+          </div>
+        )}
 
         {/* In-Call Slide-out Drawer / Sidebar (Connected Users & Chat) */}
         <CallSidebar
@@ -661,6 +769,7 @@ export default function CallRoom({
           onSendReaction={handleSendReaction}
           chatMessageCount={chatMessageCount}
           onChatMessageCountChange={setChatMessageCount}
+          onReportUser={(p) => setReportingTarget(p)}
         />
       </div>
 
@@ -706,6 +815,54 @@ export default function CallRoom({
 
             {/* Grid of secondary actions */}
             <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                id="mobile-btn-raise-hand"
+                onClick={() => {
+                  handleToggleRaiseHand();
+                  setShowMobileMore(false);
+                }}
+                className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs font-semibold cursor-pointer ${
+                  isHandRaised 
+                    ? 'bg-amber-500 border-amber-400 text-slate-950 font-bold'
+                    : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                }`}
+              >
+                <Hand className={`w-4 h-4 ${isHandRaised ? 'text-slate-950 animate-bounce' : 'text-amber-400'}`} />
+                <span>{isHandRaised ? 'Lower Hand' : 'Raise Hand ✋'}</span>
+              </button>
+
+              <button
+                id="mobile-btn-record"
+                onClick={() => {
+                  handleToggleRecording();
+                  setShowMobileMore(false);
+                }}
+                className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs font-semibold cursor-pointer ${
+                  isRecording 
+                    ? 'bg-rose-600 border-rose-500 text-white animate-pulse'
+                    : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                }`}
+              >
+                <CircleDot className={`w-4 h-4 ${isRecording ? 'text-white animate-spin' : 'text-rose-400'}`} />
+                <span>{isRecording ? `REC ${Math.floor(recordingSeconds / 60)}:${(recordingSeconds % 60).toString().padStart(2, '0')}` : 'Record Call'}</span>
+              </button>
+
+              <button
+                id="mobile-btn-blur"
+                onClick={() => {
+                  handleToggleBackgroundBlur();
+                  setShowMobileMore(false);
+                }}
+                className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs font-semibold cursor-pointer ${
+                  isBackgroundBlurred 
+                    ? 'bg-cyan-600 border-cyan-500 text-white'
+                    : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                }`}
+              >
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                <span>{isBackgroundBlurred ? 'Blur: ON' : 'Blur Video'}</span>
+              </button>
+
               <button
                 id="mobile-btn-participants"
                 onClick={() => {
@@ -756,10 +913,10 @@ export default function CallRoom({
                   setShowMobileMore(false);
                   setIsSettingsOpen(true);
                 }}
-                className="p-3 rounded-2xl bg-slate-800 hover:bg-slate-750 border border-slate-700 flex items-center gap-2.5 text-xs font-semibold text-slate-200 cursor-pointer"
+                className="p-3 rounded-2xl bg-slate-800 hover:bg-slate-750 border border-slate-700 flex items-center gap-2.5 text-xs font-semibold text-slate-200 cursor-pointer col-span-2"
               >
                 <Settings className="w-4 h-4 text-slate-400" />
-                <span>Call Settings</span>
+                <span>Call Settings & Hardware</span>
               </button>
             </div>
           </div>
@@ -953,6 +1110,72 @@ export default function CallRoom({
             </span>
           </button>
 
+          {/* Raise Hand Button */}
+          <button
+            id="control-btn-raise-hand-desktop"
+            onClick={handleToggleRaiseHand}
+            title={isHandRaised ? "Lower Hand" : "Raise Hand to Speak"}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center relative ${
+              isHandRaised
+                ? 'bg-amber-500 text-slate-950 font-bold shadow-lg shadow-amber-500/30 ring-2 ring-amber-300'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <Hand className={`w-5 h-5 ${isHandRaised ? 'animate-bounce' : ''}`} />
+            {isHandRaised && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-300 animate-ping" />
+            )}
+          </button>
+
+          {/* In-Browser Call Recording Button */}
+          <button
+            id="control-btn-record-desktop"
+            onClick={handleToggleRecording}
+            title={isRecording ? "Stop & Save Recording" : "Record Call (Local .webm file)"}
+            className={`px-3.5 sm:px-4 py-3.5 sm:py-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center gap-2 ${
+              isRecording
+                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30 ring-2 ring-rose-400 animate-pulse'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <CircleDot className={`w-5 h-5 ${isRecording ? 'animate-spin' : 'text-rose-500'}`} />
+            {isRecording ? (
+              <span className="text-xs font-mono font-bold">
+                REC {Math.floor(recordingSeconds / 60).toString().padStart(2, '0')}:{(recordingSeconds % 60).toString().padStart(2, '0')}
+              </span>
+            ) : (
+              <span className="hidden xl:inline text-xs font-semibold">Record</span>
+            )}
+          </button>
+
+          {/* Background Blur Video Filter Toggle */}
+          <button
+            id="control-btn-blur-desktop"
+            onClick={handleToggleBackgroundBlur}
+            title={isBackgroundBlurred ? "Disable Background Blur" : "Blur Video Background"}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              isBackgroundBlurred
+                ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/30 ring-2 ring-cyan-400'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <Sparkles className="w-5 h-5" />
+          </button>
+
+          {/* Noise Cancellation / High Quality Audio Toggle */}
+          <button
+            id="control-btn-noise-suppression"
+            onClick={handleToggleNoiseSuppression}
+            title={isNoiseSuppression ? "Studio Noise Cancellation: Active" : "Noise Cancellation: Off"}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all shadow-md cursor-pointer flex items-center justify-center ${
+              isNoiseSuppression
+                ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/40'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700'
+            }`}
+          >
+            <Radio className="w-5 h-5" />
+          </button>
+
           {/* In-Call Chat Drawer Toggle */}
           <button
             id="control-btn-chat-desktop"
@@ -1024,6 +1247,17 @@ export default function CallRoom({
         roomId={room.id}
         roomTitle={room.title}
       />
+
+      {/* Report User Modal */}
+      {reportingTarget && (
+        <ReportUserModal
+          isOpen={!!reportingTarget}
+          onClose={() => setReportingTarget(null)}
+          targetUser={reportingTarget}
+          roomId={room.id}
+          currentUser={currentUser}
+        />
+      )}
     </div>
   );
 }

@@ -17,14 +17,22 @@ import {
   Check, 
   UserMinus, 
   Volume2, 
+  VolumeX,
   Radio,
-  Share2
+  Share2,
+  Ban,
+  Flag,
+  Clock
 } from 'lucide-react';
 import { 
   doc, 
-  deleteDoc 
+  deleteDoc,
+  setDoc,
+  updateDoc,
+  arrayUnion
 } from 'firebase/firestore';
 import { db, checkIsAdmin } from '../lib/firebase';
+import { logAuditEvent } from '../lib/moderation';
 import { Participant, UserProfile, ChatMessage, CallRoom as RoomType } from '../types';
 import CallChat from './CallChat';
 
@@ -47,6 +55,7 @@ interface CallSidebarProps {
   chatMessageCount?: number;
   onChatMessageCountChange?: (count: number) => void;
   onNewChatMessage?: (msg: ChatMessage) => void;
+  onReportUser?: (p: Participant) => void;
 }
 
 const QUICK_EMOJIS = ['👋', '👏', '❤️', '🔥', '😂', '🎉', '👍', '🚀'];
@@ -125,6 +134,76 @@ export default function CallSidebar({
     });
   };
 
+  const handleToggleHostMute = async (targetUser: Participant) => {
+    try {
+      const nextMuted = !targetUser.isMutedByHost;
+      await setDoc(doc(db, 'rooms', room.id, 'participants', targetUser.uid), {
+        isMutedByHost: nextMuted
+      }, { merge: true });
+      await logAuditEvent({
+        action: 'mute',
+        actorId: currentUser.uid,
+        actorName: currentUser.displayName,
+        targetId: targetUser.uid,
+        targetName: targetUser.displayName,
+        roomId: room.id,
+        details: nextMuted ? 'Host remotely muted user' : 'Host unmuted user'
+      });
+      setActionNotice(`${targetUser.displayName} was ${nextMuted ? 'muted' : 'unmuted'} by host.`);
+      setTimeout(() => setActionNotice(null), 3000);
+    } catch (err: any) {
+      setActionNotice(`Error: ${err.message}`);
+    }
+  };
+
+  const handleBanParticipant = async (targetUser: Participant, durationMinutes?: number) => {
+    if (targetUser.uid === currentUser.uid) return;
+    const isTemp = typeof durationMinutes === 'number' && durationMinutes > 0;
+    const confirmText = isTemp
+      ? `Temporarily ban ${targetUser.displayName} for ${durationMinutes} minutes?`
+      : `Permanently ban ${targetUser.displayName} from this room?`;
+
+    if (!window.confirm(confirmText)) return;
+
+    try {
+      // 1. Add to room bannedUids
+      await setDoc(doc(db, 'rooms', room.id), {
+        bannedUids: arrayUnion(targetUser.uid)
+      }, { merge: true });
+
+      // 2. If temporary, set bannedUntil on user
+      if (isTemp) {
+        const bannedUntil = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+        await setDoc(doc(db, 'users', targetUser.uid), {
+          isBanned: true,
+          bannedUntil,
+          banReason: `Temp ban from room ${room.title} for ${durationMinutes}m`
+        }, { merge: true });
+      }
+
+      // 3. Remove participant from active call
+      await deleteDoc(doc(db, 'rooms', room.id, 'participants', targetUser.uid));
+
+      // 4. Log audit event
+      await logAuditEvent({
+        action: isTemp ? 'temp_ban' : 'ban',
+        actorId: currentUser.uid,
+        actorName: currentUser.displayName,
+        targetId: targetUser.uid,
+        targetName: targetUser.displayName,
+        roomId: room.id,
+        details: isTemp ? `Temporary ban (${durationMinutes} mins)` : 'Permanent ban from room'
+      });
+
+      setActionNotice(`${targetUser.displayName} was banned ${isTemp ? `for ${durationMinutes}m` : 'from room'}.`);
+      setTimeout(() => setActionNotice(null), 3000);
+    } catch (err: any) {
+      console.error('Failed to ban participant:', err);
+      setActionNotice(`Error: ${err.message}`);
+      setTimeout(() => setActionNotice(null), 3000);
+    }
+  };
+
   const handleRemoveParticipant = async (targetUser: Participant) => {
     if (targetUser.uid === currentUser.uid) return;
     
@@ -134,6 +213,15 @@ export default function CallSidebar({
 
     try {
       await deleteDoc(doc(db, 'rooms', room.id, 'participants', targetUser.uid));
+      await logAuditEvent({
+        action: 'kick',
+        actorId: currentUser.uid,
+        actorName: currentUser.displayName,
+        targetId: targetUser.uid,
+        targetName: targetUser.displayName,
+        roomId: room.id,
+        details: 'User kicked from room'
+      });
       setActionNotice(`${targetUser.displayName} was removed from the call.`);
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
@@ -343,6 +431,10 @@ export default function CallSidebar({
                                 <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
                                   <Radio className="w-2.5 h-2.5 animate-pulse" /> Speaking now
                                 </span>
+                              ) : p.raisedHand ? (
+                                <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                                  <span>✋</span> Hand raised
+                                </span>
                               ) : p.isScreenSharing ? (
                                 <span className="text-[10px] text-blue-400 font-medium flex items-center gap-1">
                                   <Monitor className="w-2.5 h-2.5" /> Sharing screen
@@ -357,7 +449,7 @@ export default function CallSidebar({
                         </div>
 
                         {/* Status Icons & Action Controls */}
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1 shrink-0">
                           {/* Microphone indicator */}
                           <span
                             title={p.isAudioMuted ? 'Muted' : 'Microphone Active'}
@@ -399,14 +491,59 @@ export default function CallSidebar({
                             </button>
                           )}
 
-                          {/* Host / Admin Remove Action */}
+                          {/* Report User action */}
+                          {!isMe && onReportUser && (
+                            <button
+                              onClick={() => onReportUser(p)}
+                              title={`Report ${p.displayName}`}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+                            >
+                              <Flag className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {/* Host Moderation: Remote Mute */}
+                          {canModerate && (
+                            <button
+                              onClick={() => handleToggleHostMute(p)}
+                              title={p.isMutedByHost ? "Unmute user" : "Mute user remotely"}
+                              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
+                                p.isMutedByHost
+                                  ? 'bg-amber-600 text-white'
+                                  : 'text-slate-400 hover:text-amber-400 hover:bg-amber-950/40'
+                              }`}
+                            >
+                              {p.isMutedByHost ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+
+                          {/* Host Moderation: Kick */}
                           {canModerate && (
                             <button
                               onClick={() => handleRemoveParticipant(p)}
-                              title={`Disconnect ${p.displayName} from call`}
+                              title={`Kick ${p.displayName} from call`}
                               className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 transition cursor-pointer"
                             >
                               <UserMinus className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {/* Host Moderation: Ban (with temp options) */}
+                          {canModerate && (
+                            <button
+                              onClick={() => {
+                                const choice = window.prompt(
+                                  `Ban ${p.displayName}?\nType '5' for 5 mins, '60' for 1 hour, or 'perm' for permanent ban:`,
+                                  '5'
+                                );
+                                if (choice === '5') handleBanParticipant(p, 5);
+                                else if (choice === '60') handleBanParticipant(p, 60);
+                                else if (choice === 'perm') handleBanParticipant(p);
+                              }}
+                              title={`Ban ${p.displayName} from room`}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-rose-500 hover:bg-rose-950/50 transition cursor-pointer"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
                             </button>
                           )}
                         </div>

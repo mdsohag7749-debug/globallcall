@@ -13,11 +13,20 @@ import {
   Plus, 
   CheckCircle2, 
   AlertTriangle,
-  RefreshCw,
   Mail,
   Clock,
   ExternalLink,
-  Crown
+  Crown,
+  Ban,
+  AlertOctagon,
+  FileText,
+  Megaphone,
+  Check,
+  X,
+  History,
+  Unlock,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { 
   collection, 
@@ -29,7 +38,8 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { db, checkIsAdmin } from '../lib/firebase';
-import { UserProfile, CallRoom as RoomType } from '../types';
+import { UserProfile, CallRoom as RoomType, ReportItem, AuditLogItem, Announcement } from '../types';
+import { logAuditEvent } from '../lib/moderation';
 
 interface AdminPanelProps {
   currentUser: UserProfile | null;
@@ -44,19 +54,49 @@ export default function AdminPanel({
   onJoinRoom,
   onOpenAuth
 }: AdminPanelProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'rooms' | 'announcements'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'rooms' | 'ban_list' | 'reports' | 'announcements'>('overview');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [rooms, setRooms] = useState<RoomType[]>([]);
+  const [reports, setReports] = useState<ReportItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+  const [lobbyAnnouncements, setLobbyAnnouncements] = useState<Announcement[]>([]);
   const [participantCounts, setParticipantCounts] = useState<Record<string, number>>({});
+  
+  // Theme state
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
+  });
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('theme', next);
+  };
+
+  // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
+  const [reportFilter, setReportFilter] = useState<'all' | 'pending' | 'resolved' | 'dismissed'>('all');
+
+  // Modal / Form States
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [newRoomType, setNewRoomType] = useState<'video_audio' | 'audio_only'>('video_audio');
   const [isGlobalFeatured, setIsGlobalFeatured] = useState(false);
+
+  // Broadcast & Announcements
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementRoomId, setAnnouncementRoomId] = useState<string>('all');
+  const [lobbyBannerText, setLobbyBannerText] = useState('');
   const [broadcastSuccess, setBroadcastSuccess] = useState<string | null>(null);
+
+  // Manual Ban Modal
+  const [showBanModal, setShowBanModal] = useState(false);
+  const [targetBanUid, setTargetBanUid] = useState('');
+  const [banReason, setBanReason] = useState('Violation of community guidelines');
+  const [banDuration, setBanDuration] = useState<'15m' | '1h' | '24h' | 'permanent'>('permanent');
+
+  // Toast
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const isAdmin = checkIsAdmin(currentUser);
@@ -107,6 +147,57 @@ export default function AdminPanel({
         console.warn('Admin rooms sync error:', err);
       }
     );
+
+    return () => unsub();
+  }, [isAdmin]);
+
+  // Sync Reports from Firestore
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const reportsCol = collection(db, 'reports');
+    const unsub = onSnapshot(reportsCol, (snapshot) => {
+      const list: ReportItem[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setReports(list);
+    }, (err) => console.warn('Reports sync error:', err));
+
+    return () => unsub();
+  }, [isAdmin]);
+
+  // Sync Audit Logs from Firestore
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const auditCol = collection(db, 'auditLogs');
+    const unsub = onSnapshot(auditCol, (snapshot) => {
+      const list: AuditLogItem[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setAuditLogs(list);
+    }, (err) => console.warn('Audit logs sync error:', err));
+
+    return () => unsub();
+  }, [isAdmin]);
+
+  // Sync Announcements from Firestore
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const annCol = collection(db, 'announcements');
+    const unsub = onSnapshot(annCol, (snapshot) => {
+      const list: Announcement[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setLobbyAnnouncements(list);
+    }, (err) => console.warn('Announcements sync error:', err));
 
     return () => unsub();
   }, [isAdmin]);
@@ -190,6 +281,8 @@ export default function AdminPanel({
         createdByName: currentUser?.displayName || 'Admin',
         callType: newRoomType,
         isGlobal: isGlobalFeatured,
+        isOfficial: true,
+        isPinned: true,
         createdAt: new Date().toISOString()
       };
 
@@ -232,11 +325,129 @@ export default function AdminPanel({
     }
   };
 
+  // Lobby Banner Creation
+  const handlePublishLobbyBanner = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!lobbyBannerText.trim()) return;
+
+    try {
+      await addDoc(collection(db, 'announcements'), {
+        text: lobbyBannerText.trim(),
+        active: true,
+        authorName: currentUser?.displayName || 'Administrator',
+        createdAt: new Date().toISOString()
+      });
+      setLobbyBannerText('');
+      showNotification('success', 'Lobby announcement banner published!');
+    } catch (err: any) {
+      showNotification('error', `Failed to post banner: ${err.message}`);
+    }
+  };
+
+  const handleDeleteBanner = async (bannerId: string) => {
+    try {
+      await deleteDoc(doc(db, 'announcements', bannerId));
+      showNotification('success', 'Banner removed.');
+    } catch (err: any) {
+      showNotification('error', `Failed to remove banner: ${err.message}`);
+    }
+  };
+
+  const handleToggleBannerStatus = async (banner: Announcement) => {
+    if (!banner.id) return;
+    try {
+      await setDoc(doc(db, 'announcements', banner.id), { active: !banner.active }, { merge: true });
+      showNotification('success', `Banner status toggled to ${!banner.active ? 'Active' : 'Inactive'}`);
+    } catch (err: any) {
+      showNotification('error', `Failed to update banner: ${err.message}`);
+    }
+  };
+
+  // Ban & Moderation Actions
+  const handleUnbanUser = async (user: UserProfile) => {
+    try {
+      await setDoc(doc(db, 'users', user.uid), {
+        isBanned: false,
+        bannedUntil: null,
+        banReason: null
+      }, { merge: true });
+
+      await logAuditEvent({
+        action: 'unban',
+        actorId: currentUser?.uid || 'admin',
+        actorName: currentUser?.displayName || 'Admin',
+        targetId: user.uid,
+        targetName: user.displayName,
+        details: 'Admin manually lifted ban'
+      });
+
+      showNotification('success', `User ${user.displayName} unbanned.`);
+    } catch (err: any) {
+      showNotification('error', `Failed to unban: ${err.message}`);
+    }
+  };
+
+  const handleExecuteBan = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!targetBanUid.trim()) return;
+
+    try {
+      let bannedUntil: string | null = null;
+      if (banDuration === '15m') {
+        bannedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      } else if (banDuration === '1h') {
+        bannedUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      } else if (banDuration === '24h') {
+        bannedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      }
+
+      await setDoc(doc(db, 'users', targetBanUid), {
+        isBanned: true,
+        bannedUntil,
+        banReason: banReason.trim()
+      }, { merge: true });
+
+      const targetUser = users.find(u => u.uid === targetBanUid);
+
+      await logAuditEvent({
+        action: banDuration === 'permanent' ? 'ban' : 'temp_ban',
+        actorId: currentUser?.uid || 'admin',
+        actorName: currentUser?.displayName || 'Admin',
+        targetId: targetBanUid,
+        targetName: targetUser?.displayName || targetBanUid,
+        details: `Reason: ${banReason.trim()} (${banDuration === 'permanent' ? 'Permanent' : `Temp until ${bannedUntil}`})`
+      });
+
+      setShowBanModal(false);
+      setTargetBanUid('');
+      setBanReason('Violation of community guidelines');
+      showNotification('success', `User banned successfully.`);
+    } catch (err: any) {
+      showNotification('error', `Failed to ban user: ${err.message}`);
+    }
+  };
+
+  const handleUpdateReportStatus = async (reportId: string, status: 'resolved' | 'dismissed') => {
+    try {
+      await setDoc(doc(db, 'reports', reportId), { status }, { merge: true });
+      showNotification('success', `Report marked as ${status}.`);
+    } catch (err: any) {
+      showNotification('error', `Failed to update report: ${err.message}`);
+    }
+  };
+
+  const bannedUsers = users.filter(u => u.isBanned === true);
+
   const filteredUsers = users.filter(u => 
     u.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (u.email && u.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
     u.uid.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const filteredReports = reports.filter(r => {
+    if (reportFilter === 'all') return true;
+    return r.status === reportFilter;
+  });
 
   const totalOnlineParticipants = (Object.values(participantCounts) as number[]).reduce((a: number, b: number) => a + b, 0);
 
@@ -273,7 +484,7 @@ export default function AdminPanel({
             <button
               id="admin-switch-account-btn"
               onClick={onOpenAuth}
-              className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2"
+              className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer"
             >
               <Mail className="w-4 h-4" />
               Sign in with mdsohag7749@gmail.com
@@ -281,7 +492,7 @@ export default function AdminPanel({
             <button
               id="admin-return-lobby-btn"
               onClick={onBackToLobby}
-              className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-sm transition flex items-center justify-center gap-2"
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-sm transition flex items-center justify-center gap-2 cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
               Return to Call Lobby
@@ -293,15 +504,15 @@ export default function AdminPanel({
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+    <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} flex flex-col`}>
       {/* Top Header */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30 px-6 py-4">
+      <header className={`border-b ${theme === 'dark' ? 'border-slate-800/80 bg-slate-900/60' : 'border-slate-200 bg-white/80'} backdrop-blur-md sticky top-0 z-30 px-6 py-4`}>
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
               id="admin-back-btn"
               onClick={onBackToLobby}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+              className={`p-2 rounded-xl ${theme === 'dark' ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'} hover:text-white transition cursor-pointer`}
               title="Back to Lobby"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -312,28 +523,37 @@ export default function AdminPanel({
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="font-bold text-lg text-white">Administrator Control Panel</h1>
+                  <h1 className={`font-bold text-lg ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Administrator Control Panel</h1>
                   <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
                     <Crown className="w-3 h-3" /> Admin Verified
                   </span>
                 </div>
-                <p className="text-xs text-slate-400">System management, users, active call rooms & broadcast</p>
+                <p className="text-xs text-slate-400">System management, ban controls, audit log & global announcements</p>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 border border-slate-700/60 px-3 py-1.5 rounded-xl text-xs">
+            {/* Theme Toggle Button */}
+            <button
+              onClick={toggleTheme}
+              className={`p-2 rounded-xl border ${theme === 'dark' ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-slate-100 border-slate-200 text-slate-700'} transition cursor-pointer`}
+              title="Toggle Dark / Light Theme"
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+            </button>
+
+            <div className={`hidden sm:flex items-center gap-2 ${theme === 'dark' ? 'bg-slate-800/80 border-slate-700/60' : 'bg-slate-100 border-slate-200'} border px-3 py-1.5 rounded-xl text-xs`}>
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-slate-300">Logged in as:</span>
-              <span className="font-semibold text-white">{currentUser?.email || currentUser?.displayName}</span>
+              <span className="text-slate-400">Logged in as:</span>
+              <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-slate-800'}`}>{currentUser?.email || currentUser?.displayName}</span>
             </div>
             <button
               id="admin-view-lobby-top-btn"
               onClick={onBackToLobby}
-              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-medium text-slate-200 transition flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-medium text-white transition flex items-center gap-1.5 cursor-pointer shadow-md"
             >
-              <Video className="w-4 h-4 text-indigo-400" />
+              <Video className="w-4 h-4" />
               Open Call Lobby
             </button>
           </div>
@@ -357,12 +577,12 @@ export default function AdminPanel({
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col gap-6">
         {/* Navigation Tabs */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-between border-b border-slate-800 pb-4 gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               id="admin-tab-overview"
               onClick={() => setActiveTab('overview')}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'overview'
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
@@ -374,7 +594,7 @@ export default function AdminPanel({
             <button
               id="admin-tab-users"
               onClick={() => setActiveTab('users')}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'users'
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
@@ -386,7 +606,7 @@ export default function AdminPanel({
             <button
               id="admin-tab-rooms"
               onClick={() => setActiveTab('rooms')}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'rooms'
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
@@ -396,16 +616,40 @@ export default function AdminPanel({
               Call Rooms ({rooms.length})
             </button>
             <button
+              id="admin-tab-ban-list"
+              onClick={() => setActiveTab('ban_list')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'ban_list'
+                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
+                  : 'text-rose-400 hover:text-rose-300 hover:bg-slate-900'
+              }`}
+            >
+              <Ban className="w-4 h-4" />
+              Ban List ({bannedUsers.length})
+            </button>
+            <button
+              id="admin-tab-reports"
+              onClick={() => setActiveTab('reports')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'reports'
+                  ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20'
+                  : 'text-amber-400 hover:text-amber-300 hover:bg-slate-900'
+              }`}
+            >
+              <AlertOctagon className="w-4 h-4" />
+              Reports & Audit ({reports.filter(r => r.status === 'pending').length} pending)
+            </button>
+            <button
               id="admin-tab-announcements"
               onClick={() => setActiveTab('announcements')}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2 ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'announcements'
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
               }`}
             >
-              <Sparkles className="w-4 h-4" />
-              Broadcast Notification
+              <Megaphone className="w-4 h-4" />
+              Announcements & Banner
             </button>
           </div>
 
@@ -413,10 +657,21 @@ export default function AdminPanel({
             <button
               id="admin-new-room-btn"
               onClick={() => setIsCreatingRoom(true)}
-              className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-sm"
+              className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-sm cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Create Official Room
+            </button>
+          )}
+
+          {activeTab === 'ban_list' && (
+            <button
+              id="admin-manual-ban-btn"
+              onClick={() => setShowBanModal(true)}
+              className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+            >
+              <Ban className="w-4 h-4" />
+              Ban a User
             </button>
           )}
         </div>
@@ -450,24 +705,24 @@ export default function AdminPanel({
 
               <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Callers Connected</span>
-                  <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                    <Radio className="w-4 h-4" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Banned Accounts</span>
+                  <div className="w-8 h-8 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center">
+                    <Ban className="w-4 h-4" />
                   </div>
                 </div>
-                <div className="text-3xl font-bold text-emerald-400">{totalOnlineParticipants}</div>
-                <p className="text-xs text-slate-500 mt-1">Real-time peers in calls</p>
+                <div className="text-3xl font-bold text-rose-400">{bannedUsers.length}</div>
+                <p className="text-xs text-slate-500 mt-1">Enforced suspensions</p>
               </div>
 
               <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Primary Admin</span>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending Reports</span>
                   <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
-                    <Shield className="w-4 h-4" />
+                    <AlertOctagon className="w-4 h-4" />
                   </div>
                 </div>
-                <div className="text-sm font-bold text-amber-300 truncate">mdsohag7749@gmail.com</div>
-                <p className="text-xs text-slate-500 mt-1">Root Superadmin</p>
+                <div className="text-3xl font-bold text-amber-400">{reports.filter(r => r.status === 'pending').length}</div>
+                <p className="text-xs text-slate-500 mt-1">Require moderation review</p>
               </div>
             </div>
 
@@ -482,7 +737,7 @@ export default function AdminPanel({
                   </h3>
                   <button
                     onClick={() => setActiveTab('rooms')}
-                    className="text-xs font-medium text-indigo-400 hover:text-indigo-300"
+                    className="text-xs font-medium text-indigo-400 hover:text-indigo-300 cursor-pointer"
                   >
                     Manage All Rooms →
                   </button>
@@ -510,7 +765,7 @@ export default function AdminPanel({
                           </span>
                           <button
                             onClick={() => onJoinRoom(room)}
-                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition flex items-center gap-1"
+                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition flex items-center gap-1 cursor-pointer"
                           >
                             Join Call
                           </button>
@@ -529,7 +784,7 @@ export default function AdminPanel({
                 <div>
                   <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
                     <Shield className="w-4 h-4 text-indigo-400" />
-                    Admin Privileges
+                    Admin Privileges & Guard
                   </h3>
                   <ul className="text-xs text-slate-400 space-y-2.5 mb-6">
                     <li className="flex items-start gap-2">
@@ -538,21 +793,21 @@ export default function AdminPanel({
                     </li>
                     <li className="flex items-start gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Promote other users to Admin or demote them.</span>
+                      <span>Kick, temporary mute/ban, or permanent ban abusers.</span>
                     </li>
                     <li className="flex items-start gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Send system-wide broadcast messages to live calls.</span>
+                      <span>Broadcast Lobby announcements & in-call notifications.</span>
                     </li>
                     <li className="flex items-start gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Create permanent global or featured community rooms.</span>
+                      <span>Audit log records every kick/mute/ban/unban action.</span>
                     </li>
                   </ul>
                 </div>
 
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
-                  <p className="text-xs font-semibold text-slate-300 mb-1">Configured Admin Accounts</p>
+                  <p className="text-xs font-semibold text-slate-300 mb-1">Superadmin Account</p>
                   <p className="text-xs text-indigo-400 font-mono">mdsohag7749@gmail.com</p>
                   <p className="text-xs text-slate-400 font-mono mt-0.5">ffsohag7749@gmail.com</p>
                 </div>
@@ -608,7 +863,12 @@ export default function AdminPanel({
                               className="w-8 h-8 rounded-full bg-slate-800 object-cover"
                             />
                             <div>
-                              <p className="font-semibold text-white">{user.displayName}</p>
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-semibold text-white">{user.displayName}</p>
+                                {user.isBanned && (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-rose-500/20 text-rose-400 border border-rose-500/30">Banned</span>
+                                )}
+                              </div>
                               <p className="text-slate-500 font-mono text-[10px] truncate max-w-[120px]">{user.uid}</p>
                             </div>
                           </div>
@@ -646,10 +906,31 @@ export default function AdminPanel({
                         </td>
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            {user.isBanned ? (
+                              <button
+                                onClick={() => handleUnbanUser(user)}
+                                title="Unban User"
+                                className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition cursor-pointer"
+                              >
+                                <Unlock className="w-4 h-4" />
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setTargetBanUid(user.uid);
+                                  setShowBanModal(true);
+                                }}
+                                title="Ban User"
+                                className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 transition cursor-pointer"
+                              >
+                                <Ban className="w-4 h-4" />
+                              </button>
+                            )}
+
                             <button
                               onClick={() => handleToggleUserRole(user)}
                               title={isTargetAdmin ? 'Demote to Member' : 'Promote to Admin'}
-                              className={`p-1.5 rounded-lg border transition ${
+                              className={`p-1.5 rounded-lg border transition cursor-pointer ${
                                 isTargetAdmin
                                   ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
                                   : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20'
@@ -660,7 +941,7 @@ export default function AdminPanel({
                             <button
                               onClick={() => handleDeleteUser(user)}
                               title="Delete User Record"
-                              className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition"
+                              className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition cursor-pointer"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -694,7 +975,7 @@ export default function AdminPanel({
               <button
                 id="admin-create-room-toggle"
                 onClick={() => setIsCreatingRoom(!isCreatingRoom)}
-                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-lg shadow-indigo-600/20"
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-lg shadow-indigo-600/20 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 {isCreatingRoom ? 'Cancel' : 'Create Room'}
@@ -760,13 +1041,13 @@ export default function AdminPanel({
                   <button
                     type="button"
                     onClick={() => setIsCreatingRoom(false)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs font-medium transition"
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs font-medium transition cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition"
+                    className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer"
                   >
                     Publish Room
                   </button>
@@ -806,7 +1087,7 @@ export default function AdminPanel({
                     <div className="flex items-center justify-between pt-3 border-t border-slate-900">
                       <button
                         onClick={() => onJoinRoom(room)}
-                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition flex items-center gap-1.5"
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition flex items-center gap-1.5 cursor-pointer"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
                         Enter Call
@@ -814,7 +1095,7 @@ export default function AdminPanel({
 
                       <button
                         onClick={() => handleDeleteRoom(room)}
-                        className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 text-xs font-medium transition flex items-center gap-1"
+                        className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 text-xs font-medium transition flex items-center gap-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         Close Room
@@ -832,66 +1113,520 @@ export default function AdminPanel({
           </div>
         )}
 
-        {/* Tab 4: Announcement Broadcast */}
-        {activeTab === 'announcements' && (
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 max-w-2xl mx-auto w-full">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
-                <Sparkles className="w-5 h-5" />
-              </div>
+        {/* Tab 4: Ban List Panel */}
+        {activeTab === 'ban_list' && (
+          <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
               <div>
-                <h3 className="font-semibold text-white">Broadcast Admin Announcement</h3>
-                <p className="text-xs text-slate-400">Push an instant system notification to in-call chat channels</p>
-              </div>
-            </div>
-
-            {broadcastSuccess && (
-              <div className="mb-4 p-3 rounded-xl bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                {broadcastSuccess}
-              </div>
-            )}
-
-            <form onSubmit={handleSendBroadcast} className="flex flex-col gap-4">
-              <div>
-                <label className="text-xs text-slate-300 font-medium mb-1.5 block">Target Call Channel</label>
-                <select
-                  value={announcementRoomId}
-                  onChange={(e) => setAnnouncementRoomId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="all">📢 All Active Call Rooms ({rooms.length} rooms)</option>
-                  {rooms.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.title} ({participantCounts[r.id] || 0} callers)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-300 font-medium mb-1.5 block">Announcement Message</label>
-                <textarea
-                  rows={4}
-                  required
-                  placeholder="Type your official announcement here... (e.g. Scheduled maintenance in 10 minutes, or welcoming new participants!)"
-                  value={announcementText}
-                  onChange={(e) => setAnnouncementText(e.target.value)}
-                  className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
-                />
+                <h3 className="font-semibold text-white flex items-center gap-2">
+                  <Ban className="w-5 h-5 text-rose-400" />
+                  Banned Users Directory
+                </h3>
+                <p className="text-xs text-slate-400">Review suspended users, view temporary ban durations, or lift bans</p>
               </div>
 
               <button
-                type="submit"
-                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20"
+                onClick={() => setShowBanModal(true)}
+                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-lg shadow-rose-600/20 cursor-pointer"
               >
-                <Radio className="w-4 h-4" />
-                Send Broadcast Message
+                <Ban className="w-4 h-4" />
+                Ban User Manually
               </button>
-            </form>
+            </div>
+
+            {bannedUsers.length === 0 ? (
+              <div className="text-center py-12 border border-dashed border-slate-800 rounded-xl">
+                <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-2 opacity-80" />
+                <p className="text-sm font-medium text-white">No Banned Users</p>
+                <p className="text-xs text-slate-500 mt-1">There are currently zero active account suspensions.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-800/80">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                    <tr>
+                      <th className="py-3 px-4">User</th>
+                      <th className="py-3 px-4">Reason</th>
+                      <th className="py-3 px-4">Duration</th>
+                      <th className="py-3 px-4">Expires</th>
+                      <th className="py-3 px-4 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 bg-slate-900/40">
+                    {bannedUsers.map((user) => {
+                      const isTemp = !!user.bannedUntil;
+                      return (
+                        <tr key={user.uid} className="hover:bg-slate-800/40 transition">
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={user.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`}
+                                alt={user.displayName}
+                                className="w-8 h-8 rounded-full bg-slate-800 object-cover"
+                              />
+                              <div>
+                                <p className="font-semibold text-white">{user.displayName}</p>
+                                <p className="text-slate-500 font-mono text-[10px] truncate max-w-[140px]">{user.uid}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-slate-300">
+                            {user.banReason || 'No reason specified'}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
+                              isTemp 
+                                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' 
+                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                            }`}>
+                              {isTemp ? 'Temporary' : 'Permanent'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-400">
+                            {user.bannedUntil ? new Date(user.bannedUntil).toLocaleString() : 'Never (Permanent)'}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <button
+                              onClick={() => handleUnbanUser(user)}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition flex items-center gap-1.5 ml-auto cursor-pointer"
+                            >
+                              <Unlock className="w-3.5 h-3.5" />
+                              Lift Ban
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 5: Reports & Audit Log */}
+        {activeTab === 'reports' && (
+          <div className="flex flex-col gap-6">
+            {/* Reports Section */}
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-white flex items-center gap-2">
+                    <AlertOctagon className="w-5 h-5 text-amber-400" />
+                    User Moderation Reports
+                  </h3>
+                  <p className="text-xs text-slate-400">Reports filed by room participants for harassment, spam, or abuse</p>
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                  <button
+                    onClick={() => setReportFilter('all')}
+                    className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${reportFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}
+                  >
+                    All ({reports.length})
+                  </button>
+                  <button
+                    onClick={() => setReportFilter('pending')}
+                    className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${reportFilter === 'pending' ? 'bg-amber-600 text-white' : 'text-slate-400'}`}
+                  >
+                    Pending
+                  </button>
+                  <button
+                    onClick={() => setReportFilter('resolved')}
+                    className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${reportFilter === 'resolved' ? 'bg-emerald-600 text-white' : 'text-slate-400'}`}
+                  >
+                    Resolved
+                  </button>
+                </div>
+              </div>
+
+              {filteredReports.length === 0 ? (
+                <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-xs text-slate-500">
+                  No reports matching current filter.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredReports.map((report) => (
+                    <div
+                      key={report.id}
+                      className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                            report.status === 'pending'
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : report.status === 'resolved'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {report.status}
+                          </span>
+                          <span className="text-xs font-semibold text-rose-400 uppercase tracking-wider">
+                            {report.reason.replace('_', ' ')}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            • {new Date(report.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+
+                        <p className="text-xs text-white">
+                          <span className="font-semibold text-slate-300">Reported:</span>{' '}
+                          <span className="text-rose-300 font-medium">{report.reportedUserName}</span>{' '}
+                          <span className="text-slate-500">({report.reportedUserId})</span>
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          <span className="font-semibold text-slate-500">By:</span> {report.reporterName} • <span className="font-semibold text-slate-500">Room:</span> {report.roomId}
+                        </p>
+                        {report.details && (
+                          <p className="text-xs text-slate-300 bg-slate-900/80 rounded-lg p-2 mt-1 border border-slate-800">
+                            "{report.details}"
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {report.status === 'pending' && (
+                          <>
+                            <button
+                              onClick={() => {
+                                setTargetBanUid(report.reportedUserId);
+                                setShowBanModal(true);
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                              Ban User
+                            </button>
+                            <button
+                              onClick={() => handleUpdateReportStatus(report.id, 'resolved')}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              Resolve
+                            </button>
+                            <button
+                              onClick={() => handleUpdateReportStatus(report.id, 'dismissed')}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-xs font-medium transition cursor-pointer"
+                            >
+                              Dismiss
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Audit Log Stream */}
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-white flex items-center gap-2">
+                    <History className="w-5 h-5 text-indigo-400" />
+                    Moderation Audit Log
+                  </h3>
+                  <p className="text-xs text-slate-400">Immutable trace of kick, mute, ban, unban, and moderation actions</p>
+                </div>
+                <span className="text-xs text-slate-500 font-mono">{auditLogs.length} events</span>
+              </div>
+
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {auditLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="bg-slate-950/70 border border-slate-800/60 rounded-lg p-3 text-xs flex items-center justify-between gap-4"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase ${
+                        log.action === 'ban' || log.action === 'temp_ban'
+                          ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          : log.action === 'kick'
+                            ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            : log.action === 'mute'
+                              ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      }`}>
+                        {log.action}
+                      </span>
+                      <div>
+                        <p className="text-slate-200">
+                          <span className="font-semibold text-indigo-300">{log.actorName}</span>{' '}
+                          executed <span className="font-semibold text-white">{log.action}</span> on{' '}
+                          <span className="font-semibold text-rose-300">{log.targetName || log.targetId || 'Room'}</span>
+                        </p>
+                        {log.details && (
+                          <p className="text-[11px] text-slate-400 mt-0.5">{log.details}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                      {new Date(log.createdAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+                {auditLogs.length === 0 && (
+                  <p className="text-center py-8 text-xs text-slate-500">No audit events recorded yet.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 6: Announcements & Lobby Banner */}
+        {activeTab === 'announcements' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Left: Lobby Announcement Banner Broadcaster */}
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+                    <Megaphone className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-white">Lobby Announcement Banner</h3>
+                    <p className="text-xs text-slate-400">Broadcasts a sticky banner at the top of the main Call Lobby</p>
+                  </div>
+                </div>
+
+                <form onSubmit={handlePublishLobbyBanner} className="space-y-3">
+                  <div>
+                    <label className="text-xs text-slate-300 font-medium mb-1 block">New Banner Message</label>
+                    <textarea
+                      rows={3}
+                      required
+                      placeholder="e.g. 📢 Welcome to GlobalCall! Scheduled maintenance tonight at 12:00 AM UTC."
+                      value={lobbyBannerText}
+                      onChange={(e) => setLobbyBannerText(e.target.value)}
+                      className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                  >
+                    <Megaphone className="w-4 h-4" />
+                    Publish to Lobby Banner
+                  </button>
+                </form>
+              </div>
+
+              {/* Existing Banners */}
+              <div className="pt-4 border-t border-slate-800">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Active Lobby Banners</h4>
+                <div className="space-y-2">
+                  {lobbyAnnouncements.map((banner) => (
+                    <div
+                      key={banner.id}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="flex-1 truncate">
+                        <p className={`text-xs font-medium ${banner.active ? 'text-amber-300' : 'text-slate-500 line-through'}`}>
+                          {banner.text}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {banner.authorName} • {new Date(banner.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => handleToggleBannerStatus(banner)}
+                          className={`px-2 py-1 rounded text-[10px] font-semibold transition cursor-pointer ${
+                            banner.active
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {banner.active ? 'Active' : 'Disabled'}
+                        </button>
+                        <button
+                          onClick={() => banner.id && handleDeleteBanner(banner.id)}
+                          className="p-1 rounded text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {lobbyAnnouncements.length === 0 && (
+                    <p className="text-xs text-slate-500 text-center py-4">No lobby banners published yet.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right: In-Call Chat Channel Broadcaster */}
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                    <Radio className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-white">Broadcast In-Call Message</h3>
+                    <p className="text-xs text-slate-400">Push instant message into active in-call chat rooms</p>
+                  </div>
+                </div>
+
+                {broadcastSuccess && (
+                  <div className="mb-4 p-3 rounded-xl bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    {broadcastSuccess}
+                  </div>
+                )}
+
+                <form onSubmit={handleSendBroadcast} className="flex flex-col gap-4">
+                  <div>
+                    <label className="text-xs text-slate-300 font-medium mb-1.5 block">Target Call Channel</label>
+                    <select
+                      value={announcementRoomId}
+                      onChange={(e) => setAnnouncementRoomId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="all">📢 All Active Call Rooms ({rooms.length} rooms)</option>
+                      {rooms.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.title} ({participantCounts[r.id] || 0} callers)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-slate-300 font-medium mb-1.5 block">Announcement Message</label>
+                    <textarea
+                      rows={4}
+                      required
+                      placeholder="Type your official announcement here... (e.g. Scheduled maintenance in 10 minutes, or welcoming new participants!)"
+                      value={announcementText}
+                      onChange={(e) => setAnnouncementText(e.target.value)}
+                      className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 cursor-pointer"
+                  >
+                    <Radio className="w-4 h-4" />
+                    Send Broadcast Message
+                  </button>
+                </form>
+              </div>
+            </div>
           </div>
         )}
       </main>
+
+      {/* Manual Ban Modal */}
+      {showBanModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-in zoom-in-95">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white flex items-center gap-2">
+                <Ban className="w-5 h-5 text-rose-400" />
+                Ban User from Platform
+              </h3>
+              <button
+                onClick={() => setShowBanModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExecuteBan} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Target User (Select or Enter UID)</label>
+                <select
+                  value={targetBanUid}
+                  onChange={(e) => setTargetBanUid(e.target.value)}
+                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-rose-500 mb-2"
+                >
+                  <option value="">-- Choose registered user --</option>
+                  {users.map(u => (
+                    <option key={u.uid} value={u.uid}>{u.displayName} ({u.email || u.uid})</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  placeholder="Or enter UID manually..."
+                  value={targetBanUid}
+                  onChange={(e) => setTargetBanUid(e.target.value)}
+                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Ban Reason</label>
+                <input
+                  type="text"
+                  required
+                  value={banReason}
+                  onChange={(e) => setBanReason(e.target.value)}
+                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Ban Duration</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBanDuration('15m')}
+                    className={`p-2 rounded-xl border font-medium cursor-pointer ${banDuration === '15m' ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'}`}
+                  >
+                    15 Minutes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBanDuration('1h')}
+                    className={`p-2 rounded-xl border font-medium cursor-pointer ${banDuration === '1h' ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'}`}
+                  >
+                    1 Hour
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBanDuration('24h')}
+                    className={`p-2 rounded-xl border font-medium cursor-pointer ${banDuration === '24h' ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'}`}
+                  >
+                    24 Hours
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBanDuration('permanent')}
+                    className={`p-2 rounded-xl border font-medium cursor-pointer ${banDuration === 'permanent' ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'}`}
+                  >
+                    Permanent Ban
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowBanModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!targetBanUid.trim()}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition disabled:opacity-50 cursor-pointer"
+                >
+                  Confirm Ban
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

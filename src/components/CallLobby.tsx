@@ -23,18 +23,33 @@ import {
   Wifi, 
   HelpCircle, 
   X, 
-  Flame 
+  Flame,
+  Sun,
+  Moon,
+  Pin,
+  Shield,
+  Key,
+  EyeOff,
+  Map as MapIcon,
+  Megaphone,
+  UserCheck,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
 import { 
   collection, 
   onSnapshot, 
   doc, 
-  setDoc 
+  setDoc,
+  deleteDoc
 } from 'firebase/firestore';
 import { db, logOut, checkIsAdmin } from '../lib/firebase';
-import { UserProfile, CallRoom as RoomType } from '../types';
+import { UserProfile, CallRoom as RoomType, Announcement } from '../types';
 import { createPlaceholderVideoStream } from '../lib/webrtc';
 import CallSettingsModal from './CallSettingsModal';
+import UserProfileModal from './UserProfileModal';
+import FriendsModal from './FriendsModal';
+import RoadmapModal from './RoadmapModal';
 
 interface CallLobbyProps {
   currentUser: UserProfile | null;
@@ -107,6 +122,26 @@ export default function CallLobby({
   const [activeFilter, setActiveFilter] = useState<'all' | 'video_audio' | 'audio_only' | 'popular' | 'community'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showHelpModal, setShowHelpModal] = useState(false);
+
+  // Roadmap extra states
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
+  });
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isFriendsOpen, setIsFriendsOpen] = useState(false);
+  const [isRoadmapOpen, setIsRoadmapOpen] = useState(false);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+
+  // Room creation roadmap options
+  const [newRoomPassword, setNewRoomPassword] = useState('');
+  const [isPasswordRequired, setIsPasswordRequired] = useState(false);
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [newParticipantLimit, setNewParticipantLimit] = useState<number>(0); // 0 = unlimited
+
+  // Password Prompt Modal state
+  const [passwordPromptRoom, setPasswordPromptRoom] = useState<RoomType | null>(null);
+  const [enteredPassword, setEnteredPassword] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -274,12 +309,41 @@ export default function CallLobby({
     }
   };
 
-  const handleJoin = (room: RoomType) => {
-    if (!currentUser) {
-      onOpenAuth();
-      return;
-    }
+  // Real-time Announcements Sync
+  useEffect(() => {
+    const annCol = collection(db, 'announcements');
+    const unsub = onSnapshot(annCol, (snap) => {
+      const list: Announcement[] = [];
+      snap.forEach(d => {
+        const a = d.data() as Announcement;
+        if (a.active !== false) {
+          list.push({ id: d.id, ...a });
+        }
+      });
+      setAnnouncements(list);
+    }, (err) => console.warn('Announcements sync notice:', err));
 
+    return () => unsub();
+  }, []);
+
+  // Auto-close (5 min) check for empty custom rooms
+  useEffect(() => {
+    const now = Date.now();
+    rooms.forEach(async (r) => {
+      if (r.createdBy !== 'system' && !r.isGlobal && !r.isOfficial) {
+        const count = roomParticipantsCount[r.id] || 0;
+        const createdTime = new Date(r.createdAt).getTime();
+        // If room has 0 participants and was created over 5 minutes ago
+        if (count === 0 && now - createdTime > 5 * 60 * 1000) {
+          try {
+            await deleteDoc(doc(db, 'rooms', r.id));
+          } catch (e) {}
+        }
+      }
+    });
+  }, [rooms, roomParticipantsCount]);
+
+  const proceedWithJoin = (room: RoomType) => {
     // Immediately stop hardware preview tracks so CallRoom can capture real camera & mic cleanly
     if (previewStream) {
       previewStream.getTracks().forEach(t => t.stop());
@@ -296,13 +360,57 @@ export default function CallLobby({
     setDoc(roomRef, {
       title: room.title,
       description: room.description || '',
-      createdBy: room.createdBy || currentUser.uid,
+      createdBy: room.createdBy || currentUser?.uid || 'guest',
       callType: room.callType || 'video_audio',
       isGlobal: !!room.isGlobal,
+      isOfficial: !!room.isOfficial,
+      isPinned: !!room.isPinned,
+      isPrivate: !!room.isPrivate,
+      isPasswordProtected: !!room.isPasswordProtected,
+      password: room.password || null,
+      participantLimit: room.participantLimit || null,
       createdAt: room.createdAt || new Date().toISOString()
     }, { merge: true }).catch(console.error);
 
     onJoinRoom(room, { audioMuted: micMuted, videoOff });
+  };
+
+  const handleJoin = (room: RoomType) => {
+    if (!currentUser) {
+      onOpenAuth();
+      return;
+    }
+
+    // Participant limit check
+    const count = roomParticipantsCount[room.id] || 0;
+    if (room.participantLimit && count >= room.participantLimit) {
+      setJoinError(`এই Room টি পূর্ণ (সর্বোচ্চ সীমা ${room.participantLimit} জন)। অন্য Room এ চেষ্টা করুন।`);
+      return;
+    }
+
+    // Password protected room check
+    if (room.isPasswordProtected && room.createdBy !== currentUser.uid && !isAdmin) {
+      setPasswordPromptRoom(room);
+      setEnteredPassword('');
+      setPasswordError(null);
+      return;
+    }
+
+    proceedWithJoin(room);
+  };
+
+  const handleConfirmPassword = (e: FormEvent) => {
+    e.preventDefault();
+    if (!passwordPromptRoom) return;
+
+    if (passwordPromptRoom.password !== enteredPassword) {
+      setPasswordError('ভুল Password! অনুগ্রহ করে সঠিক পাসওয়ার্ড দিন।');
+      return;
+    }
+
+    const target = passwordPromptRoom;
+    setPasswordPromptRoom(null);
+    proceedWithJoin(target);
   };
 
   const handleCreateRoom = async (e: FormEvent) => {
@@ -317,6 +425,12 @@ export default function CallLobby({
       createdBy: currentUser.uid,
       callType: newRoomType,
       isGlobal: false,
+      isOfficial: isAdmin,
+      isPinned: isAdmin,
+      isPrivate: isPrivateRoom,
+      isPasswordProtected: isPasswordRequired && !!newRoomPassword.trim(),
+      password: isPasswordRequired ? newRoomPassword.trim() : undefined,
+      participantLimit: newParticipantLimit > 0 ? newParticipantLimit : undefined,
       createdAt: new Date().toISOString()
     };
 
@@ -324,7 +438,11 @@ export default function CallLobby({
       await setDoc(doc(db, 'rooms', roomId), newRoom);
       setShowCreateModal(false);
       setNewRoomTitle('');
-      handleJoin(newRoom);
+      setNewRoomPassword('');
+      setIsPasswordRequired(false);
+      setIsPrivateRoom(false);
+      setNewParticipantLimit(0);
+      proceedWithJoin(newRoom);
     } catch (e) {
       console.error('Failed to create room:', e);
     }
@@ -365,7 +483,7 @@ export default function CallLobby({
 
   // Filtered rooms logic
   const filteredRooms = useMemo(() => {
-    return rooms.filter((r) => {
+    const list = rooms.filter((r) => {
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch = 
         !query ||
@@ -375,12 +493,24 @@ export default function CallLobby({
 
       if (!matchesSearch) return false;
 
+      // Public / private toggle: Hide private rooms unless searched
+      if (r.isPrivate && !query) return false;
+
       if (activeFilter === 'video_audio') return r.callType !== 'audio_only';
       if (activeFilter === 'audio_only') return r.callType === 'audio_only';
       if (activeFilter === 'popular') return (roomParticipantsCount[r.id] || 0) > 0;
       if (activeFilter === 'community') return r.isGlobal || r.createdBy === 'system';
       return true;
     });
+
+    // Pinned rooms (Official rooms top-এ)
+    list.sort((a, b) => {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return 0;
+    });
+
+    return list;
   }, [rooms, searchQuery, activeFilter, roomParticipantsCount]);
 
   // Total online participant calculation
@@ -439,6 +569,48 @@ export default function CallLobby({
 
 
 
+            {/* Roadmap Explorer CTA Button */}
+            <button
+              id="btn-open-roadmap"
+              onClick={() => setIsRoadmapOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-linear-to-r from-indigo-500/20 via-purple-500/20 to-pink-500/20 hover:from-indigo-500/30 hover:to-pink-500/30 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-semibold shadow-md transition cursor-pointer"
+              title="Interactive Feature Roadmap (27 Features)"
+            >
+              <MapIcon className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Feature Roadmap</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-indigo-500 text-white font-mono font-bold">27</span>
+            </button>
+
+            {/* Dark / Light Mode Toggle */}
+            <button
+              id="btn-toggle-theme"
+              onClick={() => {
+                const next = theme === 'dark' ? 'light' : 'dark';
+                setTheme(next);
+                localStorage.setItem('theme', next);
+              }}
+              className="p-2 text-slate-400 hover:text-slate-200 glass-button rounded-lg border border-white/[0.08] transition cursor-pointer"
+              title={theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"}
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-cyan-400" />}
+            </button>
+
+            {/* Friends & DM Drawer Trigger */}
+            {currentUser && (
+              <button
+                id="btn-open-friends"
+                onClick={() => setIsFriendsOpen(true)}
+                aria-label="Friends and Direct Messages"
+                className="p-2 text-slate-400 hover:text-slate-200 glass-button rounded-lg border border-white/[0.08] transition-all cursor-pointer relative"
+                title="Friends & Direct Messaging"
+              >
+                <Users className="w-4 h-4" />
+                {currentUser.friends && currentUser.friends.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-indigo-500" />
+                )}
+              </button>
+            )}
+
             {/* Help / Docs Modal trigger */}
             <button
               id="btn-open-help"
@@ -452,12 +624,16 @@ export default function CallLobby({
             {/* User Profile / Quick Join CTA */}
             {currentUser ? (
               <div className="flex items-center gap-2 sm:gap-3">
-                <div className="flex items-center gap-2 bg-slate-900/90 border border-white/[0.1] px-2.5 sm:px-3 py-1.5 rounded-xl">
+                <button
+                  onClick={() => setIsProfileOpen(true)}
+                  title="View / Edit Profile, Bio, & Badges"
+                  className="flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800/90 border border-white/[0.1] hover:border-indigo-500/40 px-2.5 sm:px-3 py-1.5 rounded-xl transition cursor-pointer group"
+                >
                   {currentUser.photoURL ? (
                     <img
                       src={currentUser.photoURL}
                       alt={currentUser.displayName}
-                      className="w-6 h-6 rounded-full object-cover border border-slate-600"
+                      className="w-6 h-6 rounded-full object-cover border border-slate-600 group-hover:border-indigo-400"
                       referrerPolicy="no-referrer"
                     />
                   ) : (
@@ -465,11 +641,11 @@ export default function CallLobby({
                       {currentUser.displayName.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <span className="text-xs font-semibold text-slate-200 hidden sm:inline max-w-[100px] truncate">
+                  <span className="text-xs font-semibold text-slate-200 group-hover:text-white hidden sm:inline max-w-[100px] truncate">
                     {currentUser.displayName}
                   </span>
                   <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-                </div>
+                </button>
 
                 {isAdmin && (
                   <button
@@ -506,6 +682,15 @@ export default function CallLobby({
           </div>
         </div>
       </header>
+
+      {/* Global Announcements Broadcast Banner */}
+      {announcements.length > 0 && (
+        <div className="relative z-40 bg-linear-to-r from-amber-600/25 via-indigo-600/25 to-purple-600/25 border-b border-amber-500/30 px-4 py-2 text-center text-xs font-medium text-amber-200 flex items-center justify-center gap-2 animate-in fade-in">
+          <Megaphone className="w-4 h-4 text-amber-400 animate-bounce shrink-0" />
+          <span className="font-semibold text-white">[ANNOUNCEMENT]:</span>
+          <span>{announcements[0].text}</span>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12 space-y-12">
@@ -910,16 +1095,41 @@ export default function CallLobby({
                   <div className="space-y-4">
                     {/* Badges & Member Count */}
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-md border flex items-center gap-1.5 ${
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border flex items-center gap-1 ${
                           isAudioOnly
                             ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
                             : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
                         }`}>
                           {isAudioOnly ? <Headphones className="w-3 h-3 text-amber-400" /> : <Video className="w-3 h-3 text-indigo-400" />}
-                          {isAudioOnly ? 'Audio Only' : 'Video & Audio'}
+                          {isAudioOnly ? 'Audio' : 'Video'}
                         </span>
-                        {room.isGlobal && (
+
+                        {room.isPinned && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                            <Pin className="w-2.5 h-2.5" /> Pinned
+                          </span>
+                        )}
+
+                        {(room.isOfficial || room.createdBy === 'system') && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <ShieldCheck className="w-2.5 h-2.5" /> Official
+                          </span>
+                        )}
+
+                        {room.isPasswordProtected && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1" title="Password Required">
+                            <Lock className="w-2.5 h-2.5" /> Pass
+                          </span>
+                        )}
+
+                        {room.isPrivate && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1" title="Private Room">
+                            <EyeOff className="w-2.5 h-2.5" /> Private
+                          </span>
+                        )}
+
+                        {room.isGlobal && !room.isPinned && (
                           <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
                             Featured
                           </span>
@@ -927,10 +1137,12 @@ export default function CallLobby({
                       </div>
 
                       {/* Participant Counter */}
-                      <div className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-900/60 px-2.5 py-1 rounded-full border border-white/[0.06]">
+                      <div className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-900/60 px-2.5 py-1 rounded-full border border-white/[0.06] shrink-0">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        <span className="font-mono font-semibold text-emerald-400">{count}</span>
-                        <span className="text-slate-400">{isAudioOnly ? 'listening' : 'in call'}</span>
+                        <span className="font-mono font-semibold text-emerald-400">
+                          {count}{room.participantLimit ? `/${room.participantLimit}` : ''}
+                        </span>
+                        <span className="text-slate-400">{isAudioOnly ? 'callers' : 'in call'}</span>
                       </div>
                     </div>
 
@@ -1149,35 +1361,71 @@ export default function CallLobby({
 
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Call Mode
+                  Participant Limit (Max Callers)
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNewRoomType('video_audio')}
-                    className={`py-2.5 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer ${
-                      newRoomType === 'video_audio'
-                        ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200'
-                        : 'bg-slate-800 border-slate-700 text-slate-400'
-                    }`}
-                  >
-                    <Video className="w-4 h-4" />
-                    Video & Audio
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setNewRoomType('audio_only')}
-                    className={`py-2.5 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer ${
-                      newRoomType === 'audio_only'
-                        ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200'
-                        : 'bg-slate-800 border-slate-700 text-slate-400'
-                    }`}
-                  >
-                    <Headphones className="w-4 h-4" />
-                    Audio Only
-                  </button>
+                <div className="grid grid-cols-4 gap-2">
+                  {[0, 2, 4, 8].map(limit => (
+                    <button
+                      key={limit}
+                      type="button"
+                      onClick={() => setNewParticipantLimit(limit)}
+                      className={`py-2 px-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                        newParticipantLimit === limit
+                          ? 'bg-indigo-600/30 border-indigo-500 text-indigo-200'
+                          : 'bg-slate-800 border-slate-700 text-slate-400'
+                      }`}
+                    >
+                      {limit === 0 ? 'Unlimited' : `${limit} max`}
+                    </button>
+                  ))}
                 </div>
+              </div>
+
+              {/* Public / Private Toggle */}
+              <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="private-room-checkbox" className="text-xs font-medium text-slate-200 flex items-center gap-1.5 cursor-pointer">
+                    <EyeOff className="w-3.5 h-3.5 text-indigo-400" />
+                    Private Room (Lobby-তে লুকানো)
+                  </label>
+                  <input
+                    id="private-room-checkbox"
+                    type="checkbox"
+                    checked={isPrivateRoom}
+                    onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Private হলে এটি Lobby feed-এ দেখাবে না, শুধুমাত্র সরাসরি লিংক বা Room ID দিয়ে জয়েন করা যাবে।
+                </p>
+              </div>
+
+              {/* Password Protection Toggle */}
+              <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="password-room-checkbox" className="text-xs font-medium text-slate-200 flex items-center gap-1.5 cursor-pointer">
+                    <Lock className="w-3.5 h-3.5 text-rose-400" />
+                    Password Protection (পাসওয়ার্ড দিন)
+                  </label>
+                  <input
+                    id="password-room-checkbox"
+                    type="checkbox"
+                    checked={isPasswordRequired}
+                    onChange={(e) => setIsPasswordRequired(e.target.checked)}
+                    className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500"
+                  />
+                </div>
+                {isPasswordRequired && (
+                  <input
+                    type="text"
+                    required
+                    placeholder="Enter Room Password (পাসওয়ার্ড লিখুন)..."
+                    value={newRoomPassword}
+                    onChange={(e) => setNewRoomPassword(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 mt-1"
+                  />
+                )}
               </div>
 
               <div className="pt-2 flex items-center justify-end gap-2">
@@ -1241,7 +1489,7 @@ export default function CallLobby({
             <div className="pt-2 flex justify-end">
               <button
                 onClick={() => setShowHelpModal(false)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer"
               >
                 Close
               </button>
@@ -1249,6 +1497,88 @@ export default function CallLobby({
           </div>
         </div>
       )}
+
+      {/* Password Prompt Modal */}
+      {passwordPromptRoom && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm bg-slate-900 border border-rose-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Lock className="w-4 h-4 text-rose-400" />
+                Password Protected Room
+              </h3>
+              <button
+                onClick={() => setPasswordPromptRoom(null)}
+                className="p-1 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-300">
+              Room <strong className="text-white">"{passwordPromptRoom.title}"</strong> পাসওয়ার্ড দিয়ে সুরক্ষিত। প্রবেশ করতে পাসওয়ার্ড লিখুন:
+            </p>
+            <form onSubmit={handleConfirmPassword} className="space-y-3">
+              <input
+                type="password"
+                autoFocus
+                required
+                placeholder="Enter room password..."
+                value={enteredPassword}
+                onChange={(e) => { setEnteredPassword(e.target.value); setPasswordError(null); }}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500"
+              />
+              {passwordError && (
+                <p className="text-xs text-rose-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{passwordError}</span>
+                </p>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPasswordPromptRoom(null)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl hover:bg-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-rose-600/30 cursor-pointer"
+                >
+                  Enter Room
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* User Profile Modal */}
+      {currentUser && (
+        <UserProfileModal
+          isOpen={isProfileOpen}
+          onClose={() => setIsProfileOpen(false)}
+          currentUser={currentUser}
+          onUpdateProfile={(updated) => {
+            // Profile updated in state
+          }}
+        />
+      )}
+
+      {/* Friends & DM Drawer Modal */}
+      {currentUser && (
+        <FriendsModal
+          isOpen={isFriendsOpen}
+          onClose={() => setIsFriendsOpen(false)}
+          currentUser={currentUser}
+        />
+      )}
+
+      {/* Interactive Feature Roadmap Explorer Modal */}
+      <RoadmapModal
+        isOpen={isRoadmapOpen}
+        onClose={() => setIsRoadmapOpen(false)}
+      />
     </div>
   );
 }
