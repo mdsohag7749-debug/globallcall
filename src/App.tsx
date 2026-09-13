@@ -92,7 +92,7 @@ export default function App() {
 
   if (isLoadingAuth) {
     return (
-      <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300">
+      <div className="w-full h-dvh bg-slate-950 flex flex-col items-center justify-center text-slate-300">
         <div className="w-12 h-12 rounded-full border-3 border-indigo-600 border-t-transparent animate-spin mb-4" />
         <p className="text-sm font-medium text-slate-400">Loading Global Call...</p>
       </div>

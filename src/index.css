@@ -55,9 +55,41 @@ body {
 /* Prevent unwanted mobile double tap delay */
 button, a, input, select {
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Smooth scrolling on mobile devices */
 * {
   -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent page-level bounce/overscroll on iOS */
+html, body {
+  overscroll-behavior: none;
+}
+
+/* Hide scrollbar on mobile while keeping scroll functionality */
+@media (max-width: 640px) {
+  ::-webkit-scrollbar {
+    width: 0px;
+    height: 0px;
+  }
+}
+
+/* Prevent text size adjustment on orientation change */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Safe area support for notched devices */
+.pb-safe-extra {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+}
+
+/* Video element GPU acceleration hint */
+video {
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  will-change: transform;
 }
