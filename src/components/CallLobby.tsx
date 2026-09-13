@@ -458,6 +458,16 @@ export default function CallLobby({
                   <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
                 </div>
 
+                {isAdmin && (
+                  <button
+                    id="btn-open-admin-panel"
+                    onClick={onOpenAdminPanel}
+                    title="Admin Panel"
+                    className="p-2 rounded-xl glass-button text-indigo-400 hover:text-indigo-300 border border-indigo-500/30 hover:border-indigo-400/50 transition cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   id="btn-logout"
                   onClick={() => logOut(currentUser.uid)}
