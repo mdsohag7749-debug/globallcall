@@ -14,10 +14,7 @@ import {
   Headphones, 
   ArrowRight, 
   ShieldCheck, 
-  Shield, 
   Zap, 
-  Volume2, 
-  Download, 
   FlipHorizontal, 
   Settings, 
   Search, 
@@ -427,35 +424,7 @@ export default function CallLobby({
               <span className="text-emerald-400 font-mono text-[11px]">24ms Latency</span>
             </div>
 
-            {/* Download Project ZIP Button */}
-            <a
-              id="btn-download-project-zip"
-              href="/project-source.zip"
-              download="global-call-source.zip"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/[0.08] glass-button text-slate-300 hover:text-white text-xs font-semibold transition cursor-pointer"
-              title="Download project ZIP"
-            >
-              <Download className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="hidden sm:inline">Download ZIP</span>
-              <span className="sm:hidden">ZIP</span>
-            </a>
 
-            {/* Admin Panel Button */}
-            {onOpenAdminPanel && (
-              <button
-                id="btn-open-admin-lobby"
-                onClick={onOpenAdminPanel}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
-                  isAdmin 
-                    ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30' 
-                    : 'glass-button text-slate-300 border-white/[0.08]'
-                }`}
-                title="Administrator Control Panel"
-              >
-                <Shield className={`w-3.5 h-3.5 ${isAdmin ? 'text-amber-400' : 'text-slate-400'}`} />
-                <span className="hidden md:inline">Admin</span>
-              </button>
-            )}
 
             {/* Help / Docs Modal trigger */}
             <button
